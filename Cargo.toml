@@ -1,0 +1,41 @@
+[package]
+name = "lager-net"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+description = "First-class Rust client for Lager box nets: drive power supplies, batteries, e-loads, GPIO, ADC, DAC, SPI, I2C, UART and more from cargo tests."
+repository = "https://github.com/lagerdata/lager-rs"
+keywords = ["lager", "hardware", "embedded", "hil", "instrumentation"]
+categories = ["development-tools::testing", "embedded", "api-bindings"]
+readme = "README.md"
+
+# The package publishes as `lager-net` (the `lager` name is taken on
+# crates.io by an unrelated linear-algebra crate), but the library target is
+# named `lager` so user code reads `use lager::LagerBox;`.
+[lib]
+name = "lager"
+
+[features]
+default = ["blocking"]
+# Blocking client on ureq -- tiny dependency tree, no tokio.
+blocking = ["dep:ureq"]
+# Async client on reqwest/tokio.
+async = ["dep:reqwest", "dep:tokio"]
+# UART streaming over the box's Socket.IO /uart namespace.
+uart = ["blocking", "dep:rust_socketio"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json"], optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
+rust_socketio = { version = "0.6", optional = true }
+
+[dev-dependencies]
+httpmock = "0.7"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[package.metadata.docs.rs]
+all-features = true
