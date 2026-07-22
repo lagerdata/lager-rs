@@ -44,6 +44,20 @@ pub enum Error {
         /// What the box side would need to expose for this to work.
         details: &'static str,
     },
+    /// The box sits behind an authenticating gateway and the request was
+    /// denied (HTTP 401 with the `X-Gateway-Auth-Url` discovery header),
+    /// with no usable credential available. Sign in with the Lager CLI
+    /// (`lager login <auth_url>`) — this crate reuses the CLI's session —
+    /// or supply a token via `LagerBoxBuilder::bearer_token` /
+    /// `LAGER_GATEWAY_TOKEN`.
+    AuthRequired {
+        /// Hostname of the gated box.
+        box_host: String,
+        /// The auth server URL announced by the gateway.
+        auth_url: String,
+        /// What happened (no credential vs. rejected credential).
+        message: String,
+    },
     /// Client-side configuration problem (bad host string, missing env var).
     Config(String),
     /// A streaming session (UART) reported an error, e.g. the net is in use
@@ -70,6 +84,12 @@ impl fmt::Display for Error {
             Error::NotSupportedByBox { feature, details } => write!(
                 f,
                 "'{feature}' is not yet available over the box HTTP API: {details}"
+            ),
+            Error::AuthRequired { auth_url, message, .. } => write!(
+                f,
+                "{message}. Sign in with `lager login {auth_url}` (this crate reuses the \
+                 CLI's session), or set LAGER_GATEWAY_TOKEN / use \
+                 LagerBoxBuilder::bearer_token"
             ),
             Error::Config(msg) => write!(f, "configuration error: {msg}"),
             Error::Stream(msg) => write!(f, "streaming session error: {msg}"),

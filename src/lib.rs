@@ -17,10 +17,12 @@
 //!
 //! ```toml
 //! [dev-dependencies]
-//! lager = { package = "lager-net", version = "0.1" }
+//! lager = { package = "lager-net", version = "0.2" }
 //! ```
 //!
 //! ```no_run
+//! # #[cfg(feature = "blocking")]
+//! # mod demo {
 //! use lager::{LagerBox, Level};
 //!
 //! #[test]
@@ -36,6 +38,7 @@
 //!     println!("booted in {t:.3}s");
 //!     supply.disable()
 //! }
+//! # }
 //! # fn main() {}
 //! ```
 //!
@@ -46,6 +49,21 @@
 //! never interleave I/O on one instrument. Tests sharing a *net* still
 //! observe each other's state changes — partition nets across tests or run
 //! `cargo test -- --test-threads=1` when that matters.
+//!
+//! # Boxes behind an authenticating gateway
+//!
+//! Boxes fronted by an authenticating reverse proxy (gateway) reject
+//! unauthenticated traffic with 401 + an `X-Gateway-Auth-Url` header. The
+//! crate handles this transparently: it reuses the session created by
+//! `lager login <auth_url>` (the Lager CLI's token store in
+//! `~/.lager_gateway_auth`), attaches `Authorization: Bearer` to every
+//! request — including debug-service and UART Socket.IO traffic — and
+//! refreshes expired access tokens automatically. For CI or machines
+//! without a CLI login, pin a token with
+//! [`LagerBoxBuilder::bearer_token`] or the `LAGER_GATEWAY_TOKEN`
+//! environment variable. Plain (ungated) boxes are unaffected: no header
+//! is sent and no code path runs. When no usable credential exists, calls
+//! fail with [`Error::AuthRequired`] naming the auth server to log into.
 //!
 //! # Features
 //!
@@ -64,6 +82,7 @@
 
 #![deny(missing_docs)]
 
+mod auth;
 mod error;
 pub mod nets;
 pub mod wire;
@@ -81,6 +100,18 @@ pub const BOX_HOST_ENV: &str = "LAGER_BOX_HOST";
 /// Environment variable that overrides the debug-service base URL
 /// (`LAGER_DEBUG_SERVICE_URL`), e.g. `http://127.0.0.1:8765` when tunneling.
 pub const DEBUG_SERVICE_URL_ENV: &str = "LAGER_DEBUG_SERVICE_URL";
+
+/// Environment variable holding a bearer token for boxes behind an
+/// authenticating gateway (`LAGER_GATEWAY_TOKEN`). When set, every request
+/// carries `Authorization: Bearer <token>`. Equivalent to
+/// `LagerBoxBuilder::bearer_token`.
+pub const GATEWAY_TOKEN_ENV: &str = "LAGER_GATEWAY_TOKEN";
+
+/// Environment variable that overrides the path of the Lager CLI's gateway
+/// token store (`LAGER_GATEWAY_AUTH_FILE`; default `~/.lager_gateway_auth`).
+/// The crate reads sessions created by `lager login` from this file, so the
+/// same name/semantics as the CLI are honored.
+pub const GATEWAY_AUTH_FILE_ENV: &str = "LAGER_GATEWAY_AUTH_FILE";
 
 #[cfg(feature = "blocking")]
 pub use client::{LagerBox, LagerBoxBuilder};

@@ -72,7 +72,11 @@ pub struct Uart {
 }
 
 impl Uart {
-    pub(crate) fn open(base_url: &str, netname: String) -> Result<Self> {
+    pub(crate) fn open(
+        base_url: &str,
+        netname: String,
+        bearer_token: Option<String>,
+    ) -> Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel::<UartEvent>();
 
         let socket = {
@@ -81,8 +85,13 @@ impl Uart {
             let tx_status = tx.clone();
             let tx_error = tx.clone();
             let tx_stopped = tx;
-            ClientBuilder::new(base_url)
-                .namespace("/uart")
+            let mut builder = ClientBuilder::new(base_url).namespace("/uart");
+            // Boxes behind an authenticating gateway need the bearer token
+            // on the Socket.IO handshake too (same reverse proxy).
+            if let Some(token) = &bearer_token {
+                builder = builder.opening_header("Authorization", format!("Bearer {token}"));
+            }
+            builder
                 .on("uart_connected", move |payload, _| {
                     let info = payload_json(payload).unwrap_or(Value::Null);
                     let device_path = info

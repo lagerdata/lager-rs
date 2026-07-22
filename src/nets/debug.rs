@@ -8,9 +8,10 @@
 //! full saved record from `:9000/nets/list` to hand to the service.
 //!
 //! ```no_run
+//! # #[cfg(feature = "blocking")]
+//! # fn demo() -> lager::Result<()> {
 //! use lager::LagerBox;
 //!
-//! # fn main() -> lager::Result<()> {
 //! let lager = LagerBox::from_env()?;
 //! let debug = lager.debug("debug1");
 //!
@@ -22,6 +23,7 @@
 //! println!("{vector_table:02x?}");
 //! # Ok(())
 //! # }
+//! # fn main() {}
 //! ```
 
 use std::path::Path;
@@ -211,6 +213,9 @@ pub(crate) mod ops {
         ("/debug/flash".into(), debug_body(net, payload), FLASH_TIMEOUT)
     }
 
+    /// Build the RTT body. RTT streaming is blocking-only (the async client
+    /// exposes no `rtt()`), so this is unused in async-only builds.
+    #[cfg(feature = "blocking")]
     pub(crate) fn rtt_body(net: &Value, opts: &RttOptions) -> Value {
         let mut extra = json!({ "channel": opts.channel, "timeout": Value::Null });
         if let Some(a) = opts.search_addr {

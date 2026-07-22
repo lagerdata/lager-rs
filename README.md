@@ -21,7 +21,7 @@ on port 8765.
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.1" }
+lager = { package = "lager-net", version = "0.2" }
 ```
 
 ```rust
@@ -99,7 +99,7 @@ Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.1", features = ["async"] }
+lager = { package = "lager-net", version = "0.2", features = ["async"] }
 ```
 
 ## Parallel tests and instrument safety
@@ -116,6 +116,37 @@ Timeout budgets mirror the Lager CLI: quick commands use 10 s; watt/energy
 integration windows and `wait_for_level` widen (or drop) the client timeout
 automatically so a healthy long measurement is never aborted mid-flight.
 
+## Boxes behind an authenticating gateway
+
+Boxes fronted by an authenticating reverse proxy reject unauthenticated
+traffic with 401 + an `X-Gateway-Auth-Url` header (the same contract the
+Lager CLI speaks). The crate handles this transparently:
+
+- **CLI session reuse (zero config):** after `lager login <auth_url>`, the
+  crate picks up the session from the CLI's token store
+  (`~/.lager_gateway_auth`, or `LAGER_GATEWAY_AUTH_FILE`), attaches
+  `Authorization: Bearer` to every request — including debug-service and
+  UART Socket.IO traffic — and refreshes expired access tokens
+  automatically. The box→auth-server link is learned from the gateway's
+  discovery header on first contact and the denied request is retried
+  within the same call.
+- **Pinned token (CI):** supply a token directly when there is no CLI
+  login on the machine:
+
+  ```rust,no_run
+  # fn main() -> lager::Result<()> {
+  let lager = lager::LagerBox::builder("192.168.1.42")
+      .bearer_token(std::env::var("MY_CI_TOKEN").unwrap())
+      .build()?;
+  # Ok(()) }
+  ```
+
+  or set the `LAGER_GATEWAY_TOKEN` environment variable.
+
+Plain (ungated) boxes are unaffected: no header is sent and none of this
+code runs. When a gateway asks for auth and no usable credential exists,
+calls fail with `Error::AuthRequired` naming the auth server to log into.
+
 ## Errors
 
 Everything returns `lager::Result<T>` with a single `Error` enum:
@@ -124,6 +155,7 @@ Everything returns `lager::Result<T>` with a single `Error` enum:
 - `Timeout` — the box stalled past the (already widened) budget
 - `Box { status, message }` — the box refused or the hardware failed
 - `UnsupportedByBox` — HTTP 501: the box image predates this endpoint; update the box
+- `AuthRequired` — the box's gateway wants a bearer token and none is available: run `lager login <auth_url>` or set `LAGER_GATEWAY_TOKEN`
 - `NotSupportedByBox` — the net type is a documented stub (see below)
 
 ## Firmware, flashing, and RTT

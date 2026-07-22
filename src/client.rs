@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::auth::{self, GatewayAuth};
 use crate::error::{Error, Result};
 use crate::nets::adc::Adc;
 use crate::nets::arm::Arm;
@@ -53,14 +54,16 @@ pub struct LagerBox {
     debug_base: String,
     agent: ureq::Agent,
     default_timeout: Duration,
+    auth: GatewayAuth,
 }
 
-/// Builder for [`LagerBox`], for overriding the default timeout and the
-/// debug-service URL.
+/// Builder for [`LagerBox`], for overriding the default timeout, the
+/// debug-service URL, and gateway auth.
 pub struct LagerBoxBuilder {
     host: String,
     debug_url: Option<String>,
     default_timeout: Duration,
+    bearer_token: Option<String>,
 }
 
 impl LagerBoxBuilder {
@@ -81,6 +84,20 @@ impl LagerBoxBuilder {
         self
     }
 
+    /// Attach `Authorization: Bearer <token>` to every request, for boxes
+    /// behind an authenticating gateway. Also settable via the
+    /// `LAGER_GATEWAY_TOKEN` environment variable.
+    ///
+    /// Without this, the crate reuses the Lager CLI's session
+    /// (`lager login <auth_url>`, stored in `~/.lager_gateway_auth`)
+    /// automatically when a gateway asks for auth, including transparent
+    /// refresh of expired access tokens. Plain (ungated) boxes are
+    /// unaffected either way.
+    pub fn bearer_token(mut self, token: impl Into<String>) -> Self {
+        self.bearer_token = Some(token.into());
+        self
+    }
+
     /// Build the client.
     pub fn build(self) -> Result<LagerBox> {
         let base = wire::base_url(&self.host)?;
@@ -88,11 +105,13 @@ impl LagerBoxBuilder {
             Some(url) => wire::base_url_with_port(&url, wire::DEBUG_SERVICE_PORT)?,
             None => wire::service_base(&base, wire::DEBUG_SERVICE_PORT),
         };
+        let auth = GatewayAuth::new(&base, self.bearer_token);
         Ok(LagerBox {
             base,
             debug_base,
             agent: ureq::AgentBuilder::new().build(),
             default_timeout: self.default_timeout,
+            auth,
         })
     }
 }
@@ -118,6 +137,7 @@ impl LagerBox {
             host: host.into(),
             debug_url: std::env::var(crate::DEBUG_SERVICE_URL_ENV).ok(),
             default_timeout: wire::DEFAULT_TIMEOUT,
+            bearer_token: None,
         }
     }
 
@@ -139,8 +159,67 @@ impl LagerBox {
     }
 
     /// Send one request against an arbitrary base URL and return
-    /// `(status, parsed JSON body)`.
+    /// `(status, parsed JSON body)`. Attaches gateway auth when known, and
+    /// handles a gateway denial by resolving credentials (CLI session
+    /// store, with transparent refresh) and retrying once.
     fn execute_at(&self, base: &str, req: &HttpRequest) -> Result<(u16, Value)> {
+        let token = self.current_token();
+        let (status, gateway, resp_body) = self.send_once(base, req, token.as_deref())?;
+
+        let Some(auth_url) = gateway else {
+            return Ok((status, resp_body));
+        };
+        // Gateway denial: learn the box→auth-server mapping (like the CLI),
+        // then retry once with a credential the gateway has not just seen.
+        self.auth.learn_auth_server(&auth_url);
+        if status == 401 && !self.auth.has_static_token() {
+            if let Some(fresh) = self
+                .auth
+                .resolve_token_blocking(&auth_url, token.as_deref())
+            {
+                let (status, gateway, resp_body) =
+                    self.send_once(base, req, Some(&fresh))?;
+                let Some(auth_url) = gateway else {
+                    return Ok((status, resp_body));
+                };
+                return Err(auth::denial_error(
+                    status,
+                    self.auth.box_host(),
+                    &auth_url,
+                    true,
+                ));
+            }
+        }
+        Err(auth::denial_error(
+            status,
+            self.auth.box_host(),
+            &auth_url,
+            token.is_some(),
+        ))
+    }
+
+    /// Token to attach right now: builder/env token, cached session token,
+    /// or a store lookup when the box is already known to be gated.
+    fn current_token(&self) -> Option<String> {
+        if let Some(token) = self.auth.cached_token() {
+            return Some(token);
+        }
+        if self.auth.wants_store_token() {
+            let auth_url = self.auth.auth_url()?;
+            return self.auth.resolve_token_blocking(&auth_url, None);
+        }
+        None
+    }
+
+    /// One HTTP round-trip. Returns `(status, gateway_denial_auth_url,
+    /// body)`; the auth URL is `Some` only for a gateway denial (401/403/
+    /// 503 carrying the discovery header).
+    fn send_once(
+        &self,
+        base: &str,
+        req: &HttpRequest,
+        token: Option<&str>,
+    ) -> Result<(u16, Option<String>, Value)> {
         let url = format!("{}{}", base, req.path);
         let mut r = match req.method {
             Method::Get => self.agent.request("GET", &url),
@@ -151,41 +230,50 @@ impl LagerBox {
             Timeout::After(d) => r = r.timeout(d),
             Timeout::Unbounded => {}
         }
+        if let Some(token) = token {
+            r = r.set("Authorization", &format!("Bearer {token}"));
+        }
         let outcome = match (&req.method, &req.body) {
             (Method::Post, Some(body)) => r.send_json(body.clone()),
             _ => r.call(),
         };
-        match outcome {
-            Ok(resp) => {
-                let status = resp.status();
-                let body: Value = resp
-                    .into_json()
-                    .map_err(|e| Error::Decode(format!("non-JSON response: {e}")))?;
-                Ok((status, body))
-            }
+        let resp = match outcome {
+            Ok(resp) => resp,
             // ureq reports 4xx/5xx as Err(Status); the box still sends a
             // JSON error body we need to surface.
-            Err(ureq::Error::Status(status, resp)) => {
-                let body: Value = resp.into_json().unwrap_or(Value::Null);
-                if body.is_null() {
-                    return Err(Error::Box {
-                        status,
-                        message: format!("HTTP {status} (non-JSON body)"),
-                    });
-                }
-                Ok((status, body))
-            }
+            Err(ureq::Error::Status(_, resp)) => resp,
             Err(ureq::Error::Transport(t)) => {
                 let msg = t.to_string();
-                if msg.to_ascii_lowercase().contains("timed out")
+                return if msg.to_ascii_lowercase().contains("timed out")
                     || msg.to_ascii_lowercase().contains("timeout")
                 {
                     Err(Error::Timeout(msg))
                 } else {
                     Err(Error::Connection(msg))
-                }
+                };
             }
+        };
+        let status = resp.status();
+        let gateway = if auth::is_denial(status) {
+            resp.header(auth::DISCOVERY_HEADER).map(str::to_string)
+        } else {
+            None
+        };
+        let body: Value = match resp.into_json() {
+            Ok(body) => body,
+            Err(e) if status < 400 => {
+                return Err(Error::Decode(format!("non-JSON response: {e}")))
+            }
+            // Error responses (incl. gateway denials) may have no JSON body.
+            Err(_) => Value::Null,
+        };
+        if gateway.is_none() && status >= 400 && body.is_null() {
+            return Err(Error::Box {
+                status,
+                message: format!("HTTP {status} (non-JSON body)"),
+            });
         }
+        Ok((status, gateway, body))
     }
 
     /// Execute one typed operation against a command endpoint.
@@ -201,12 +289,46 @@ impl LagerBox {
         &self,
         req: &HttpRequest,
     ) -> Result<Box<dyn std::io::Read + Send + Sync>> {
+        let token = self.current_token();
+        match self.stream_debug_once(req, token.as_deref()) {
+            // Gateway denial (only a 401 maps to AuthRequired): resolve
+            // credentials from the CLI session store — avoiding the token
+            // the gateway just rejected — and retry once, like execute_at.
+            Err(Error::AuthRequired {
+                box_host,
+                auth_url,
+                message,
+            }) if !self.auth.has_static_token() => {
+                match self
+                    .auth
+                    .resolve_token_blocking(&auth_url, token.as_deref())
+                {
+                    Some(fresh) => self.stream_debug_once(req, Some(&fresh)),
+                    None => Err(Error::AuthRequired {
+                        box_host,
+                        auth_url,
+                        message,
+                    }),
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn stream_debug_once(
+        &self,
+        req: &HttpRequest,
+        token: Option<&str>,
+    ) -> Result<Box<dyn std::io::Read + Send + Sync>> {
         let url = format!("{}{}", self.debug_base, req.path);
         let mut r = self.agent.request("POST", &url);
         match req.timeout {
             Timeout::Default => r = r.timeout(self.default_timeout),
             Timeout::After(d) => r = r.timeout(d),
             Timeout::Unbounded => {}
+        }
+        if let Some(token) = token {
+            r = r.set("Authorization", &format!("Bearer {token}"));
         }
         let outcome = match &req.body {
             Some(body) => r.send_json(body.clone()),
@@ -215,6 +337,18 @@ impl LagerBox {
         match outcome {
             Ok(resp) => Ok(resp.into_reader()),
             Err(ureq::Error::Status(status, resp)) => {
+                if auth::is_denial(status) {
+                    if let Some(auth_url) = resp.header(auth::DISCOVERY_HEADER) {
+                        let auth_url = auth_url.to_string();
+                        self.auth.learn_auth_server(&auth_url);
+                        return Err(auth::denial_error(
+                            status,
+                            self.auth.box_host(),
+                            &auth_url,
+                            token.is_some(),
+                        ));
+                    }
+                }
                 let body: Value = resp.into_json().unwrap_or(Value::Null);
                 Err(wire::parse_debug(status, body).unwrap_err())
             }
@@ -396,6 +530,6 @@ impl LagerBox {
     /// starts streaming. Only one session per net (box-enforced).
     #[cfg(feature = "uart")]
     pub fn uart(&self, name: impl Into<String>) -> Result<crate::nets::uart::Uart> {
-        crate::nets::uart::Uart::open(&self.base, name.into())
+        crate::nets::uart::Uart::open(&self.base, name.into(), self.current_token())
     }
 }
