@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::auth::{self, GatewayAuth};
 use crate::error::{Error, Result};
 use crate::nets::adc::AsyncAdc;
 use crate::nets::arm::AsyncArm;
@@ -52,14 +53,16 @@ pub struct AsyncLagerBox {
     debug_base: String,
     http: reqwest::Client,
     default_timeout: Duration,
+    auth: GatewayAuth,
 }
 
-/// Builder for [`AsyncLagerBox`], for overriding the default timeout and the
-/// debug-service URL.
+/// Builder for [`AsyncLagerBox`], for overriding the default timeout, the
+/// debug-service URL, and gateway auth.
 pub struct AsyncLagerBoxBuilder {
     host: String,
     debug_url: Option<String>,
     default_timeout: Duration,
+    bearer_token: Option<String>,
 }
 
 impl AsyncLagerBoxBuilder {
@@ -77,6 +80,20 @@ impl AsyncLagerBoxBuilder {
         self
     }
 
+    /// Attach `Authorization: Bearer <token>` to every request, for boxes
+    /// behind an authenticating gateway. Also settable via the
+    /// `LAGER_GATEWAY_TOKEN` environment variable.
+    ///
+    /// Without this, the crate reuses the Lager CLI's session
+    /// (`lager login <auth_url>`, stored in `~/.lager_gateway_auth`)
+    /// automatically when a gateway asks for auth, including transparent
+    /// refresh of expired access tokens. Plain (ungated) boxes are
+    /// unaffected either way.
+    pub fn bearer_token(mut self, token: impl Into<String>) -> Self {
+        self.bearer_token = Some(token.into());
+        self
+    }
+
     /// Build the client.
     pub fn build(self) -> Result<AsyncLagerBox> {
         let base = wire::base_url(&self.host)?;
@@ -84,11 +101,13 @@ impl AsyncLagerBoxBuilder {
             Some(url) => wire::base_url_with_port(&url, wire::DEBUG_SERVICE_PORT)?,
             None => wire::service_base(&base, wire::DEBUG_SERVICE_PORT),
         };
+        let auth = GatewayAuth::new(&base, self.bearer_token);
         Ok(AsyncLagerBox {
             base,
             debug_base,
             http: reqwest::Client::new(),
             default_timeout: self.default_timeout,
+            auth,
         })
     }
 }
@@ -114,6 +133,7 @@ impl AsyncLagerBox {
             host: host.into(),
             debug_url: std::env::var(crate::DEBUG_SERVICE_URL_ENV).ok(),
             default_timeout: wire::DEFAULT_TIMEOUT,
+            bearer_token: None,
         }
     }
 
@@ -134,8 +154,69 @@ impl AsyncLagerBox {
         self.execute_at(&self.debug_base, req).await
     }
 
-    /// Send one request against an arbitrary base URL.
+    /// Send one request against an arbitrary base URL. Attaches gateway
+    /// auth when known, and handles a gateway denial by resolving
+    /// credentials (CLI session store, with transparent refresh) and
+    /// retrying once. Mirrors the blocking client exactly.
     async fn execute_at(&self, base: &str, req: &HttpRequest) -> Result<(u16, Value)> {
+        let token = self.current_token().await;
+        let (status, gateway, resp_body) = self.send_once(base, req, token.as_deref()).await?;
+
+        let Some(auth_url) = gateway else {
+            return Ok((status, resp_body));
+        };
+        // Gateway denial: learn the box→auth-server mapping (like the CLI),
+        // then retry once with a credential the gateway has not just seen.
+        self.auth.learn_auth_server(&auth_url);
+        if status == 401 && !self.auth.has_static_token() {
+            if let Some(fresh) = self
+                .auth
+                .resolve_token_async(&auth_url, token.as_deref())
+                .await
+            {
+                let (status, gateway, resp_body) =
+                    self.send_once(base, req, Some(&fresh)).await?;
+                let Some(auth_url) = gateway else {
+                    return Ok((status, resp_body));
+                };
+                return Err(auth::denial_error(
+                    status,
+                    self.auth.box_host(),
+                    &auth_url,
+                    true,
+                ));
+            }
+        }
+        Err(auth::denial_error(
+            status,
+            self.auth.box_host(),
+            &auth_url,
+            token.is_some(),
+        ))
+    }
+
+    /// Token to attach right now: builder/env token, cached session token,
+    /// or a store lookup when the box is already known to be gated.
+    async fn current_token(&self) -> Option<String> {
+        if let Some(token) = self.auth.cached_token() {
+            return Some(token);
+        }
+        if self.auth.wants_store_token() {
+            let auth_url = self.auth.auth_url()?;
+            return self.auth.resolve_token_async(&auth_url, None).await;
+        }
+        None
+    }
+
+    /// One HTTP round-trip. Returns `(status, gateway_denial_auth_url,
+    /// body)`; the auth URL is `Some` only for a gateway denial (401/403/
+    /// 503 carrying the discovery header).
+    async fn send_once(
+        &self,
+        base: &str,
+        req: &HttpRequest,
+        token: Option<&str>,
+    ) -> Result<(u16, Option<String>, Value)> {
         let url = format!("{}{}", base, req.path);
         let mut r = match req.method {
             Method::Get => self.http.get(&url),
@@ -145,6 +226,9 @@ impl AsyncLagerBox {
             Timeout::Default => r = r.timeout(self.default_timeout),
             Timeout::After(d) => r = r.timeout(d),
             Timeout::Unbounded => {}
+        }
+        if let Some(token) = token {
+            r = r.header("Authorization", format!("Bearer {token}"));
         }
         if let Some(body) = &req.body {
             r = r.json(body);
@@ -157,14 +241,24 @@ impl AsyncLagerBox {
             }
         })?;
         let status = resp.status().as_u16();
-        let body: Value = resp.json().await.map_err(|e| {
-            if e.is_timeout() {
-                Error::Timeout(e.to_string())
-            } else {
-                Error::Decode(format!("non-JSON response: {e}"))
+        let gateway = if auth::is_denial(status) {
+            resp.headers()
+                .get(auth::DISCOVERY_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        } else {
+            None
+        };
+        let body: Value = match resp.json().await {
+            Ok(body) => body,
+            Err(e) if e.is_timeout() => return Err(Error::Timeout(e.to_string())),
+            Err(e) if status < 400 => {
+                return Err(Error::Decode(format!("non-JSON response: {e}")))
             }
-        })?;
-        Ok((status, body))
+            // Error responses (incl. gateway denials) may have no JSON body.
+            Err(_) => Value::Null,
+        };
+        Ok((status, gateway, body))
     }
 
     /// Execute one typed operation against a command endpoint.

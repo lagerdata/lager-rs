@@ -1,6 +1,6 @@
 [package]
 name = "lager-net"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -36,6 +36,12 @@ rust_socketio = { version = "0.6", optional = true }
 [dev-dependencies]
 httpmock = "0.7"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+# The runnable example uses the blocking client; keep `cargo test
+# --no-default-features --features async` building.
+[[example]]
+name = "power_cycle"
+required-features = ["blocking"]
 
 [package.metadata.docs.rs]
 all-features = true
