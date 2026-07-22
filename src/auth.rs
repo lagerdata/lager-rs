@@ -5,7 +5,9 @@
 //! path here runs unless a box answers with the gateway discovery header.
 //! When a box *is* gated, its gateway rejects unauthenticated traffic with
 //! 401 + `X-Gateway-Auth-Url: <url>`. This module implements the same
-//! contract as the Lager CLI (`lager login` / `cli/gateway_auth.py`):
+//! contract as the Lager CLI (`lager login` / `cli/gateway_auth.py`); the
+//! normative spec is `docs/reference/gateway-auth-contract.md` in the Lager
+//! monorepo:
 //!
 //! - Tokens come from (in order): [`LagerBoxBuilder::bearer_token`],
 //!   the `LAGER_GATEWAY_TOKEN` environment variable, or the CLI's token
