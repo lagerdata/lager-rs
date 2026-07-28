@@ -709,6 +709,361 @@ fn usb_toggle_and_state() {
     state.assert();
 }
 
+#[test]
+fn usb_state_maps_pre_0_29_rejection_to_unsupported() {
+    // Box images before 0.29.0 don't know the `state` action; their 400
+    // enumerates only enable|disable|toggle. That must surface as
+    // UnsupportedByBox, not a generic box error.
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/usb/command").json_body(json!({
+            "netname": "usb1", "action": "state"
+        }));
+        then.status(400).json_body(json!({
+            "success": false,
+            "error": "netname and action (enable|disable|toggle) are required"
+        }));
+    });
+    let lager = client(&server);
+    let err = lager.usb("usb1").state().unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedByBox { .. }),
+        "unexpected error: {err:?}"
+    );
+    assert!(err.to_string().contains("0.29.0"));
+    m.assert();
+}
+
+#[test]
+fn usb_state_bad_request_stays_a_box_error() {
+    // A current box's validation message includes `state`; that 400 is a
+    // genuine bad request and must NOT be reclassified.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/usb/command");
+        then.status(400).json_body(json!({
+            "success": false,
+            "error": "netname and action (enable|disable|toggle|state) are required"
+        }));
+    });
+    let lager = client(&server);
+    let err = lager.usb("usb1").state().unwrap_err();
+    assert!(matches!(err, Error::Box { status: 400, .. }));
+}
+
+// ---------------------------------------------------------------------------
+// USB bus enumeration (GET /usb/devices)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn usb_devices_lists_bus() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(GET).path("/usb/devices");
+        then.status(200).json_body(json!({
+            "success": true,
+            "devices": [
+                {"sysfs_name": "1-1.4", "vid": "0483", "pid": "df11",
+                 "serial": "STM32-DUT-01", "product": "STM32 BOOTLOADER",
+                 "manufacturer": "STMicroelectronics", "busnum": "1",
+                 "devnum": "42", "devpath": "1.4", "device_class": "00",
+                 "speed": "12"},
+                {"sysfs_name": "1-1.2", "vid": "0403", "pid": "6001",
+                 "serial": null, "product": "FT232R USB UART",
+                 "manufacturer": null, "busnum": "1", "devnum": "7",
+                 "devpath": "1.2", "device_class": "00", "speed": "12"}
+            ]
+        }));
+    });
+    let lager = client(&server);
+    let devices = lager.usb_devices().unwrap();
+    assert_eq!(devices.len(), 2);
+    assert_eq!(devices[0].vid.as_deref(), Some("0483"));
+    assert_eq!(devices[0].serial.as_deref(), Some("STM32-DUT-01"));
+    assert_eq!(devices[1].serial, None);
+    m.assert();
+}
+
+#[test]
+fn usb_devices_sends_filters_as_query_params() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(GET)
+            .path("/usb/devices")
+            .query_param("vid", "0483")
+            .query_param("serial", "STM32-DUT-01");
+        then.status(200)
+            .json_body(json!({"success": true, "devices": []}));
+    });
+    let lager = client(&server);
+    let devices = lager
+        .usb_devices_matching(&lager::UsbDeviceFilter {
+            vid: Some("0483".into()),
+            serial: Some("STM32-DUT-01".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(devices.is_empty());
+    m.assert();
+}
+
+#[test]
+fn usb_devices_missing_route_is_unsupported() {
+    // Old boxes 404 the route with Flask's HTML error page (non-JSON).
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/usb/devices");
+        then.status(404)
+            .header("content-type", "text/html")
+            .body("<!doctype html><title>404 Not Found</title>");
+    });
+    let lager = client(&server);
+    let err = lager.usb_devices().unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedByBox { .. }),
+        "unexpected error: {err:?}"
+    );
+    assert!(err.to_string().contains("0.33.0"));
+}
+
+// ---------------------------------------------------------------------------
+// DFU (POST /usb/dfu)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dfu_list_parses_devices() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/usb/dfu").json_body(json!({
+            "action": "list", "params": {}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "list",
+            "message": "Found 2 DFU device(s)",
+            "value": {
+                "exit_code": 0, "stdout": "...", "stderr": "",
+                "devices": [
+                    {"mode": "DFU", "vid": "0483", "pid": "df11",
+                     "devnum": 42, "cfg": 1, "intf": 0, "alt": 0,
+                     "name": "@Internal Flash  /0x08000000/256*0002Kg",
+                     "serial": "STM32-DUT-01", "path": "1-1.4"},
+                    {"mode": "Runtime", "vid": "0483", "pid": "374b",
+                     "devnum": 9, "cfg": 1, "intf": 3, "alt": 0,
+                     "name": "UNKNOWN", "serial": "066FFF38", "path": "1-1.2"}
+                ]
+            }
+        }));
+    });
+    let lager = client(&server);
+    let devices = lager.dfu().list().unwrap();
+    assert_eq!(devices.len(), 2);
+    assert_eq!(devices[0].mode, "DFU");
+    assert_eq!(devices[0].alt, Some(0));
+    assert_eq!(devices[0].serial.as_deref(), Some("STM32-DUT-01"));
+    m.assert();
+}
+
+#[test]
+fn dfu_download_sends_base64_firmware_and_options() {
+    let server = MockServer::start();
+    // "foobar" -> base64 "Zm9vYmFy" (same reference vector as debug flash).
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/usb/dfu").json_body(json!({
+            "action": "download",
+            "params": {
+                "vid_pid": "0483:df11",
+                "alt": 0,
+                "dfuse_address": "0x08000000:leave",
+                "reset": true,
+                "firmware": "Zm9vYmFy"
+            }
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "download",
+            "message": "dfu-util download completed",
+            "value": {"exit_code": 0, "stdout": "Download done.", "stderr": ""}
+        }));
+    });
+    let lager = client(&server);
+    let out = lager
+        .dfu()
+        .download(
+            b"foobar",
+            &lager::DfuOptions {
+                vid_pid: Some("0483:df11".into()),
+                alt: Some(0),
+                dfuse_address: Some("0x08000000:leave".into()),
+                reset: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(out.exit_code, Some(0));
+    assert_eq!(out.stdout, "Download done.");
+    m.assert();
+}
+
+#[test]
+fn dfu_failure_surfaces_box_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/usb/dfu");
+        then.status(502).json_body(json!({
+            "success": false, "action": "detach",
+            "value": {"exit_code": 74, "stdout": "", "stderr": "..."},
+            "error": "dfu-util exited with code 74: No DFU capable USB device available"
+        }));
+    });
+    let lager = client(&server);
+    let err = lager.dfu().detach(&Default::default()).unwrap_err();
+    match err {
+        Error::Box { status, message } => {
+            assert_eq!(status, 502);
+            assert!(message.contains("No DFU capable USB device"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn dfu_missing_route_is_unsupported() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/usb/dfu");
+        then.status(404)
+            .header("content-type", "text/html")
+            .body("<!doctype html><title>404 Not Found</title>");
+    });
+    let lager = client(&server);
+    let err = lager.dfu().list().unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedByBox { .. }),
+        "unexpected error: {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Box lock / reservation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lock_acquire_matches_cli_payload() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/lock").json_body(json!({
+            "user": "ci-bot", "holder_type": "user", "ttl_seconds": null
+        }));
+        then.status(200).json_body(json!({
+            "locked": true, "user": "ci-bot", "holder_type": "user",
+            "locked_at": "2026-07-28T12:00:00Z",
+            "last_heartbeat": "2026-07-28T12:00:00Z",
+            "ttl_seconds": null, "previous_user": null
+        }));
+    });
+    let lager = client(&server);
+    let lock = lager.lock("ci-bot").unwrap();
+    assert!(lock.locked);
+    assert_eq!(lock.user.as_deref(), Some("ci-bot"));
+    assert_eq!(lock.ttl_seconds, None);
+    assert_eq!(lock.previous_user, None);
+    m.assert();
+}
+
+#[test]
+fn lock_with_ttl_and_heartbeat() {
+    let server = MockServer::start();
+    let acquire = server.mock(|when, then| {
+        when.method(POST).path("/lock").json_body(json!({
+            "user": "ci-bot", "holder_type": "ci", "ttl_seconds": 1800
+        }));
+        then.status(200).json_body(json!({
+            "locked": true, "user": "ci-bot", "holder_type": "ci",
+            "ttl_seconds": 1800, "previous_user": null
+        }));
+    });
+    let heartbeat = server.mock(|when, then| {
+        when.method(POST)
+            .path("/lock/heartbeat")
+            .json_body(json!({"user": "ci-bot"}));
+        then.status(200).json_body(json!({
+            "locked": true, "user": "ci-bot", "holder_type": "ci",
+            "ttl_seconds": 1800,
+            "last_heartbeat": "2026-07-28T12:05:00Z"
+        }));
+    });
+    let lager = client(&server);
+    lager.lock_with("ci-bot", "ci", Some(1800)).unwrap();
+    let lock = lager.lock_heartbeat("ci-bot").unwrap();
+    assert_eq!(lock.last_heartbeat.as_deref(), Some("2026-07-28T12:05:00Z"));
+    acquire.assert();
+    heartbeat.assert();
+}
+
+#[test]
+fn lock_contention_is_a_409_box_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/lock");
+        then.status(409).json_body(json!({
+            "error": "Box is locked by alice",
+            "lock": {"locked": true, "user": "alice"}
+        }));
+    });
+    let lager = client(&server);
+    let err = lager.lock("bob").unwrap_err();
+    match err {
+        Error::Box { status, message } => {
+            assert_eq!(status, 409);
+            assert!(message.contains("alice"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn lock_status_and_unlock() {
+    let server = MockServer::start();
+    let status = server.mock(|when, then| {
+        when.method(GET).path("/lock");
+        then.status(200).json_body(json!({"locked": false}));
+    });
+    let unlock = server.mock(|when, then| {
+        when.method(POST).path("/unlock").json_body(json!({
+            "user": "ci-bot", "force": false
+        }));
+        then.status(200)
+            .json_body(json!({"locked": false, "message": "Box unlocked"}));
+    });
+    let lager = client(&server);
+    assert!(!lager.lock_status().unwrap().locked);
+    lager.unlock("ci-bot").unwrap();
+    status.assert();
+    unlock.assert();
+}
+
+#[test]
+fn lock_guard_releases_on_drop() {
+    let server = MockServer::start();
+    let acquire = server.mock(|when, then| {
+        when.method(POST).path("/lock");
+        then.status(200)
+            .json_body(json!({"locked": true, "user": "ci-bot"}));
+    });
+    let unlock = server.mock(|when, then| {
+        when.method(POST).path("/unlock").json_body(json!({
+            "user": "ci-bot", "force": false
+        }));
+        then.status(200)
+            .json_body(json!({"locked": false, "message": "Box unlocked"}));
+    });
+    let lager = client(&server);
+    {
+        let _guard = lager.lock_guard("ci-bot").unwrap();
+    }
+    acquire.assert();
+    unlock.assert();
+}
+
 // ---------------------------------------------------------------------------
 // Discovery / health / status
 // ---------------------------------------------------------------------------

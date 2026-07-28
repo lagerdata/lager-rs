@@ -7,10 +7,11 @@ and run it with `cargo test` — no Python required.
 The crate is a pure HTTP/JSON client of the Lager box's API (port 9000):
 power supplies, battery simulators, e-loads, solar simulators, GPIO, ADC,
 DAC, thermocouples, watt meters, energy analyzers, SPI, I2C, USB hub ports,
-robot arms, webcams, routers, and streaming UART — plus the box-level capabilities (its own BLE
-adapter, WiFi interface, and BluFi ESP32 provisioning). Debug-probe nets
-(flash / erase / reset / memory reads / RTT) talk to the box's debug service
-on port 8765.
+robot arms, webcams, routers, and streaming UART — plus the box-level
+capabilities (its own BLE adapter, WiFi interface, BluFi ESP32 provisioning,
+USB bus enumeration, box-side `dfu-util` flashing, and box lock/reservation).
+Debug-probe nets (flash / erase / reset / memory reads / RTT) talk to the
+box's debug service on port 8765.
 
 > The package publishes as **`lager-net`** (the bare `lager` name is taken
 > on crates.io), but the library target is named `lager`, so your code reads
@@ -21,7 +22,7 @@ on port 8765.
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.2" }
+lager = { package = "lager-net", version = "0.3" }
 ```
 
 ```rust
@@ -72,7 +73,7 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | `Webcam` | `lager.webcam(name)` | `start`/`stop` MJPEG stream, `url`, `status` |
 | `Router` | `lager.router(name)` | `system_info`, interfaces/clients/leases, `block_internet`, generic `command(action, params)` |
 | `DebugNet` | `lager.debug(name)` | `connect`, `flash`, `erase`, `reset`, `read_memory`, `info`/`status`, `rtt` (blocking) |
-| `Uart` | `lager.uart(name)?` *(feature `uart`)* | streaming `read`, `write`, `wait_for(b"boot ok", ...)` |
+| `Uart` | `lager.uart(name)?` *(feature `uart`)* | streaming `read`, non-blocking `try_read`, `write`, `wait_for(b"boot ok", ...)` |
 
 Box-level capabilities (the box's own hardware, no net name):
 
@@ -81,11 +82,38 @@ Box-level capabilities (the box's own hardware, no net name):
 | `Ble` | `lager.ble()` | `scan`/`scan_named`, `info`/`connect` (GATT enumeration), `disconnect` |
 | `Wifi` | `lager.wifi()` | `status`, `scan`, `connect(ssid, password)`, `delete` |
 | `Blufi` | `lager.blufi()` | `scan`, `connect`, `provision(device, ssid, password)`, `wifi_scan`, `status`, `version` |
+| `Dfu` | `lager.dfu()` | box-side `dfu-util`: `list`, `download(firmware, opts)`, `detach` |
+
+USB bus enumeration: `lager.usb_devices()` (or `usb_devices_matching` with
+vid/pid/serial filters) returns every USB device on the box's bus straight
+from sysfs — vid, pid, iSerial, product, manufacturer, bus/dev numbers, and
+speed. It takes a few milliseconds with no exclusive device access, so it is
+safe to poll while waiting for a DUT to re-enumerate.
+
+Box locking (the same `/lock` endpoints `lager boxes lock` uses):
+`lager.lock(user)` / `lock_with(user, holder_type, ttl)` /
+`lock_heartbeat(user)` / `unlock(user)` / `lock_status()`, plus a
+`lager.lock_guard(user)` RAII guard (blocking client) that releases on drop.
+Locks with a TTL auto-expire when heartbeats stop, so a crashed CI runner
+cannot wedge the box.
 
 Discovery and box health: `lager.nets()`, `lager.health()`, `lager.status()`
 (`status().capabilities.net_command` tells you the box image is new enough;
 `net_command_roles` / `ble_command` / `wifi_command` / `blufi_command` report
 the newer arm/webcam/router roles and box-level endpoints).
+
+## Minimum box version
+
+Most of the API works on any box that serves `POST /net/command`. A few
+newer surfaces need a newer box image and fail with
+`Error::UnsupportedByBox` (naming the required version) on older ones:
+
+| Crate API | Requires box |
+| --- | --- |
+| `UsbPort::state()` | >= 0.29.0 |
+| `usb_devices()` / `usb_devices_matching()` | >= 0.33.0 |
+| `dfu()` (`list`/`download`/`detach`) | >= 0.33.0 (plus `dfu-util` installed: `lager box config apt add dfu-util`) |
+| `lock()` / `unlock()` / `lock_status()` / `lock_heartbeat()` | any box serving `/lock` on port 9000 |
 
 ## Features
 
@@ -99,7 +127,7 @@ Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.2", features = ["async"] }
+lager = { package = "lager-net", version = "0.3", features = ["async"] }
 ```
 
 ## Parallel tests and instrument safety
@@ -154,7 +182,7 @@ Everything returns `lager::Result<T>` with a single `Error` enum:
 - `Connection` — box unreachable (network/Tailscale/box offline)
 - `Timeout` — the box stalled past the (already widened) budget
 - `Box { status, message }` — the box refused or the hardware failed
-- `UnsupportedByBox` — HTTP 501: the box image predates this endpoint; update the box
+- `UnsupportedByBox` — the box image predates this endpoint (HTTP 501, a missing route, or a pre-0.29.0 `state` rejection); the message names the box version required
 - `AuthRequired` — the box's gateway wants a bearer token and none is available: run `lager login <auth_url>` or set `LAGER_GATEWAY_TOKEN`
 - `NotSupportedByBox` — the net type is a documented stub (see below)
 

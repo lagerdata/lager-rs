@@ -249,8 +249,24 @@ impl Uart {
 
     /// Return whatever bytes arrive within `timeout`. May return an empty
     /// vector if the device was quiet.
+    ///
+    /// Note this waits out the **full** `timeout` when the device stays
+    /// idle (data that does arrive is still drained without further
+    /// waiting). Poll loops that only want what has already arrived should
+    /// use [`Uart::try_read`] instead, which never blocks.
     pub fn read(&mut self, timeout: Duration) -> Result<Vec<u8>> {
         self.pump(timeout)?;
+        Ok(std::mem::take(&mut self.buf))
+    }
+
+    /// Return the bytes already received, without waiting.
+    ///
+    /// Drains everything the session has queued (and anything buffered by
+    /// a previous [`Uart::wait_for`]) and returns immediately — an empty
+    /// vector when the device has been quiet. This is the non-blocking
+    /// complement to [`Uart::read`] for poll loops.
+    pub fn try_read(&mut self) -> Result<Vec<u8>> {
+        self.pump(Duration::ZERO)?;
         Ok(std::mem::take(&mut self.buf))
     }
 

@@ -242,3 +242,50 @@ fn non_debug_net_name_is_rejected() {
         other => panic!("expected 404 Error::Box, got {other:?}"),
     }
 }
+
+#[test]
+fn net_record_is_cached_across_ops_on_one_handle() {
+    // Back-to-back debug ops on the same handle must resolve /nets/list
+    // once, not per call (the `claim+discover` perf feedback).
+    let server = MockServer::start();
+    let nets = mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(POST).path("/debug/status");
+        then.status(200)
+            .json_body(json!({"connected": true, "backend": "jlink"}));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/debug/reset");
+        then.status(200)
+            .json_body(json!({"status": "reset_complete", "output": []}));
+    });
+
+    let lager = client(&server);
+    let debug = lager.debug("debug1");
+    debug.status().unwrap();
+    debug.reset(false).unwrap();
+    debug.status().unwrap();
+    nets.assert(); // exactly one /nets/list fetch for three ops
+}
+
+#[test]
+fn net_record_cache_is_invalidated_when_an_op_fails() {
+    let server = MockServer::start();
+    let nets = mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(POST).path("/debug/reset");
+        then.status(400)
+            .json_body(json!({"error": "No debugger connection found", "status": "error"}));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/debug/status");
+        then.status(200)
+            .json_body(json!({"connected": false}));
+    });
+
+    let lager = client(&server);
+    let debug = lager.debug("debug1");
+    debug.reset(false).unwrap_err(); // failure drops the cached record
+    debug.status().unwrap(); // next op re-resolves it
+    nets.assert_hits(2);
+}

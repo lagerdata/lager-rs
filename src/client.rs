@@ -13,6 +13,7 @@ use crate::nets::ble::Ble;
 use crate::nets::blufi::Blufi;
 use crate::nets::dac::Dac;
 use crate::nets::debug::DebugNet;
+use crate::nets::dfu::Dfu;
 use crate::nets::eload::Eload;
 use crate::nets::energy::EnergyAnalyzer;
 use crate::nets::gpio::Gpio;
@@ -27,7 +28,10 @@ use crate::nets::usb::UsbPort;
 use crate::nets::watt::WattMeter;
 use crate::nets::webcam::Webcam;
 use crate::nets::wifi::Wifi;
-use crate::wire::{self, BoxStatus, Health, HttpRequest, Method, NetRecord, Op, Timeout};
+use crate::wire::{
+    self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, Op, Timeout,
+    UsbDeviceFilter, UsbDeviceInfo,
+};
 use crate::BOX_HOST_ENV;
 
 /// A connection to one Lager box, over blocking HTTP.
@@ -416,6 +420,89 @@ impl LagerBox {
         serde_json::from_value(body).map_err(Into::into)
     }
 
+    /// Enumerate USB devices on the box's bus from sysfs (lsusb-like).
+    ///
+    /// A few milliseconds per call with no exclusive device access, so it
+    /// is safe to poll frequently — e.g. reading the DUT's iSerial to see
+    /// what it re-enumerated as after a hub power-cycle or DFU detach.
+    ///
+    /// Requires box software >= 0.33.0; older boxes fail with
+    /// [`Error::UnsupportedByBox`].
+    pub fn usb_devices(&self) -> Result<Vec<UsbDeviceInfo>> {
+        self.usb_devices_matching(&UsbDeviceFilter::default())
+    }
+
+    /// Like [`LagerBox::usb_devices`], with box-side vid/pid/serial
+    /// filters.
+    pub fn usb_devices_matching(&self, filter: &UsbDeviceFilter) -> Result<Vec<UsbDeviceInfo>> {
+        match self.execute(&wire::usb_devices(filter)) {
+            Ok((status, body)) => wire::parse_usb_devices(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::usb_devices_unsupported)),
+        }
+    }
+
+    // -- box lock / reservation ----------------------------------------------
+
+    fn lock_call(&self, req: &HttpRequest) -> Result<BoxLock> {
+        match self.execute(req) {
+            Ok((status, body)) => wire::parse_lock(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::lock_unsupported)),
+        }
+    }
+
+    /// Current box lock state (`GET /lock`); `locked: false` when free.
+    pub fn lock_status(&self) -> Result<BoxLock> {
+        self.lock_call(&wire::lock_status())
+    }
+
+    /// Claim the box for `user` (an eternal `holder_type: "user"` lock,
+    /// exactly like `lager boxes lock`). Re-acquiring your own lock
+    /// refreshes it; a box held by someone else fails with
+    /// [`Error::Box`] (HTTP 409) naming the holder.
+    pub fn lock(&self, user: &str) -> Result<BoxLock> {
+        self.lock_call(&wire::lock_acquire(user, "user", None))
+    }
+
+    /// Claim the box with an explicit holder type and TTL.
+    /// `ttl_seconds: None` means the lock never auto-expires; with a TTL,
+    /// keep the lock alive via [`LagerBox::lock_heartbeat`].
+    pub fn lock_with(
+        &self,
+        user: &str,
+        holder_type: &str,
+        ttl_seconds: Option<u64>,
+    ) -> Result<BoxLock> {
+        self.lock_call(&wire::lock_acquire(user, holder_type, ttl_seconds))
+    }
+
+    /// Refresh a TTL lock's heartbeat. Fails with [`Error::Box`] when the
+    /// box is not locked (HTTP 404) or held by someone else (HTTP 403).
+    pub fn lock_heartbeat(&self, user: &str) -> Result<BoxLock> {
+        self.lock_call(&wire::lock_heartbeat(user))
+    }
+
+    /// Release `user`'s box lock. Releasing an already-unlocked box
+    /// succeeds; a box held by someone else fails with [`Error::Box`]
+    /// (HTTP 403).
+    pub fn unlock(&self, user: &str) -> Result<()> {
+        self.lock_call(&wire::unlock(user, false)).map(|_| ())
+    }
+
+    /// Release the box lock even when held by another user
+    /// (`lager boxes unlock --force`).
+    pub fn unlock_force(&self, user: &str) -> Result<()> {
+        self.lock_call(&wire::unlock(user, true)).map(|_| ())
+    }
+
+    /// Claim the box for `user` and release the claim when the returned
+    /// guard drops (best-effort; call [`BoxLockGuard::unlock`] to surface
+    /// release errors).
+    pub fn lock_guard(&self, user: impl Into<String>) -> Result<BoxLockGuard<'_>> {
+        let user = user.into();
+        self.lock(&user)?;
+        Ok(BoxLockGuard { client: self, user, released: false })
+    }
+
     // -- net handle constructors ---------------------------------------------
 
     /// Handle for a power-supply net.
@@ -513,10 +600,15 @@ impl LagerBox {
         Blufi { client: self }
     }
 
+    /// Handle for box-side DFU via dfu-util (box-level, not a saved net).
+    pub fn dfu(&self) -> Dfu<'_> {
+        Dfu { client: self }
+    }
+
     /// Handle for a debug-probe net (flash/erase/reset/read_memory/RTT).
     /// Talks to the box debug service on port 8765.
     pub fn debug(&self, name: impl Into<String>) -> DebugNet<'_> {
-        DebugNet { client: self, name: name.into() }
+        DebugNet { client: self, name: name.into(), record: Default::default() }
     }
 
     /// Handle for an oscilloscope net. **Stub:** see [`Scope`].
@@ -531,5 +623,35 @@ impl LagerBox {
     #[cfg(feature = "uart")]
     pub fn uart(&self, name: impl Into<String>) -> Result<crate::nets::uart::Uart> {
         crate::nets::uart::Uart::open(&self.base, name.into(), self.current_token())
+    }
+}
+
+/// RAII box-lock claim from [`LagerBox::lock_guard`]: releases the lock on
+/// drop (best-effort — a drop cannot surface errors, so tests that must
+/// know the release worked should call [`BoxLockGuard::unlock`]).
+pub struct BoxLockGuard<'a> {
+    client: &'a LagerBox,
+    user: String,
+    released: bool,
+}
+
+impl BoxLockGuard<'_> {
+    /// The user holding this claim.
+    pub fn user(&self) -> &str {
+        &self.user
+    }
+
+    /// Release the lock now, surfacing any error.
+    pub fn unlock(mut self) -> Result<()> {
+        self.released = true;
+        self.client.unlock(&self.user)
+    }
+}
+
+impl Drop for BoxLockGuard<'_> {
+    fn drop(&mut self) {
+        if !self.released {
+            let _ = self.client.unlock(&self.user);
+        }
     }
 }

@@ -17,7 +17,7 @@
 //!
 //! ```toml
 //! [dev-dependencies]
-//! lager = { package = "lager-net", version = "0.2" }
+//! lager = { package = "lager-net", version = "0.3" }
 //! ```
 //!
 //! ```no_run
@@ -114,7 +114,7 @@ pub const GATEWAY_TOKEN_ENV: &str = "LAGER_GATEWAY_TOKEN";
 pub const GATEWAY_AUTH_FILE_ENV: &str = "LAGER_GATEWAY_AUTH_FILE";
 
 #[cfg(feature = "blocking")]
-pub use client::{LagerBox, LagerBoxBuilder};
+pub use client::{BoxLockGuard, LagerBox, LagerBoxBuilder};
 
 #[cfg(feature = "async")]
 pub use async_client::{AsyncLagerBox, AsyncLagerBoxBuilder};
@@ -123,6 +123,7 @@ pub use async_client::{AsyncLagerBox, AsyncLagerBoxBuilder};
 // for ergonomic imports (`use lager::{LagerBox, Level, EloadMode};`).
 pub use nets::battery::BatteryMode;
 pub use nets::debug::{ConnectOptions, FirmwareKind, RttOptions};
+pub use nets::dfu::DfuOptions;
 pub use nets::eload::EloadMode;
 pub use nets::gpio::{Level, WaitForLevelOptions};
 pub use nets::scope::Scope;
@@ -134,18 +135,18 @@ pub use wire::{DebugConnection, DebugInfo, DebugStatus, GdbServer};
 #[cfg(feature = "blocking")]
 pub use nets::{
     adc::Adc, arm::Arm, battery::Battery, ble::Ble, blufi::Blufi, dac::Dac, debug::DebugNet,
-    debug::RttStream, eload::Eload, energy::EnergyAnalyzer, gpio::Gpio, i2c::I2c, router::Router,
-    solar::Solar, spi::Spi, supply::Supply, thermocouple::Thermocouple, usb::UsbPort,
-    watt::WattMeter, webcam::Webcam, wifi::Wifi,
+    debug::RttStream, dfu::Dfu, eload::Eload, energy::EnergyAnalyzer, gpio::Gpio, i2c::I2c,
+    router::Router, solar::Solar, spi::Spi, supply::Supply, thermocouple::Thermocouple,
+    usb::UsbPort, watt::WattMeter, webcam::Webcam, wifi::Wifi,
 };
 
 #[cfg(feature = "async")]
 pub use nets::{
     adc::AsyncAdc, arm::AsyncArm, battery::AsyncBattery, ble::AsyncBle, blufi::AsyncBlufi,
-    dac::AsyncDac, debug::AsyncDebugNet, eload::AsyncEload, energy::AsyncEnergyAnalyzer,
-    gpio::AsyncGpio, i2c::AsyncI2c, router::AsyncRouter, solar::AsyncSolar, spi::AsyncSpi,
-    supply::AsyncSupply, thermocouple::AsyncThermocouple, usb::AsyncUsbPort,
-    watt::AsyncWattMeter, webcam::AsyncWebcam, wifi::AsyncWifi,
+    dac::AsyncDac, debug::AsyncDebugNet, dfu::AsyncDfu, eload::AsyncEload,
+    energy::AsyncEnergyAnalyzer, gpio::AsyncGpio, i2c::AsyncI2c, router::AsyncRouter,
+    solar::AsyncSolar, spi::AsyncSpi, supply::AsyncSupply, thermocouple::AsyncThermocouple,
+    usb::AsyncUsbPort, watt::AsyncWattMeter, webcam::AsyncWebcam, wifi::AsyncWifi,
 };
 
 #[cfg(feature = "uart")]
@@ -154,10 +155,10 @@ pub use nets::uart::Uart;
 // Structured result types, re-exported from the wire layer.
 pub use wire::{
     ArmPosition, BatteryState, BleCharacteristic, BleDevice, BleDeviceInfo, BleService,
-    BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxStatus,
-    EloadState, EnergyReading, EnergyStats, Health, NetRecord, NetSummary, RouterSystemInfo,
-    StatSummary, SupplyState, WattReading, WebcamStatus, WebcamStream, WifiAccessPoint,
-    WifiConnection, WifiInterface,
+    BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxLock,
+    BoxStatus, DfuDevice, DfuOutput, EloadState, EnergyReading, EnergyStats, Health, NetRecord,
+    NetSummary, RouterSystemInfo, StatSummary, SupplyState, UsbDeviceFilter, UsbDeviceInfo,
+    WattReading, WebcamStatus, WebcamStream, WifiAccessPoint, WifiConnection, WifiInterface,
 };
 pub use nets::i2c::I2cEffectiveConfig;
 pub use nets::spi::SpiEffectiveConfig;

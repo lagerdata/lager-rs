@@ -16,6 +16,7 @@ use crate::nets::ble::AsyncBle;
 use crate::nets::blufi::AsyncBlufi;
 use crate::nets::dac::AsyncDac;
 use crate::nets::debug::AsyncDebugNet;
+use crate::nets::dfu::AsyncDfu;
 use crate::nets::eload::AsyncEload;
 use crate::nets::energy::AsyncEnergyAnalyzer;
 use crate::nets::gpio::AsyncGpio;
@@ -30,7 +31,10 @@ use crate::nets::usb::AsyncUsbPort;
 use crate::nets::watt::AsyncWattMeter;
 use crate::nets::webcam::AsyncWebcam;
 use crate::nets::wifi::AsyncWifi;
-use crate::wire::{self, BoxStatus, Health, HttpRequest, Method, NetRecord, Op, Timeout};
+use crate::wire::{
+    self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, Op, Timeout,
+    UsbDeviceFilter, UsbDeviceInfo,
+};
 
 /// A connection to one Lager box, over async HTTP (reqwest/tokio).
 ///
@@ -327,6 +331,84 @@ impl AsyncLagerBox {
         serde_json::from_value(body).map_err(Into::into)
     }
 
+    /// Enumerate USB devices on the box's bus from sysfs (lsusb-like).
+    ///
+    /// A few milliseconds per call with no exclusive device access, so it
+    /// is safe to poll frequently — e.g. reading the DUT's iSerial to see
+    /// what it re-enumerated as after a hub power-cycle or DFU detach.
+    ///
+    /// Requires box software >= 0.33.0; older boxes fail with
+    /// [`Error::UnsupportedByBox`].
+    pub async fn usb_devices(&self) -> Result<Vec<UsbDeviceInfo>> {
+        self.usb_devices_matching(&UsbDeviceFilter::default()).await
+    }
+
+    /// Like [`AsyncLagerBox::usb_devices`], with box-side vid/pid/serial
+    /// filters.
+    pub async fn usb_devices_matching(
+        &self,
+        filter: &UsbDeviceFilter,
+    ) -> Result<Vec<UsbDeviceInfo>> {
+        match self.execute(&wire::usb_devices(filter)).await {
+            Ok((status, body)) => wire::parse_usb_devices(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::usb_devices_unsupported)),
+        }
+    }
+
+    // -- box lock / reservation ----------------------------------------------
+
+    async fn lock_call(&self, req: &HttpRequest) -> Result<BoxLock> {
+        match self.execute(req).await {
+            Ok((status, body)) => wire::parse_lock(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::lock_unsupported)),
+        }
+    }
+
+    /// Current box lock state (`GET /lock`); `locked: false` when free.
+    pub async fn lock_status(&self) -> Result<BoxLock> {
+        self.lock_call(&wire::lock_status()).await
+    }
+
+    /// Claim the box for `user` (an eternal `holder_type: "user"` lock,
+    /// exactly like `lager boxes lock`). Re-acquiring your own lock
+    /// refreshes it; a box held by someone else fails with
+    /// [`Error::Box`] (HTTP 409) naming the holder.
+    pub async fn lock(&self, user: &str) -> Result<BoxLock> {
+        self.lock_call(&wire::lock_acquire(user, "user", None)).await
+    }
+
+    /// Claim the box with an explicit holder type and TTL.
+    /// `ttl_seconds: None` means the lock never auto-expires; with a TTL,
+    /// keep the lock alive via [`AsyncLagerBox::lock_heartbeat`].
+    pub async fn lock_with(
+        &self,
+        user: &str,
+        holder_type: &str,
+        ttl_seconds: Option<u64>,
+    ) -> Result<BoxLock> {
+        self.lock_call(&wire::lock_acquire(user, holder_type, ttl_seconds))
+            .await
+    }
+
+    /// Refresh a TTL lock's heartbeat. Fails with [`Error::Box`] when the
+    /// box is not locked (HTTP 404) or held by someone else (HTTP 403).
+    pub async fn lock_heartbeat(&self, user: &str) -> Result<BoxLock> {
+        self.lock_call(&wire::lock_heartbeat(user)).await
+    }
+
+    /// Release `user`'s box lock. Releasing an already-unlocked box
+    /// succeeds; a box held by someone else fails with [`Error::Box`]
+    /// (HTTP 403).
+    pub async fn unlock(&self, user: &str) -> Result<()> {
+        self.lock_call(&wire::unlock(user, false)).await.map(|_| ())
+    }
+
+    /// Release the box lock even when held by another user
+    /// (`lager boxes unlock --force`).
+    pub async fn unlock_force(&self, user: &str) -> Result<()> {
+        self.lock_call(&wire::unlock(user, true)).await.map(|_| ())
+    }
+
     // -- net handle constructors ---------------------------------------------
 
     /// Handle for a power-supply net.
@@ -424,10 +506,15 @@ impl AsyncLagerBox {
         AsyncBlufi { client: self }
     }
 
+    /// Handle for box-side DFU via dfu-util (box-level, not a saved net).
+    pub fn dfu(&self) -> AsyncDfu<'_> {
+        AsyncDfu { client: self }
+    }
+
     /// Handle for a debug-probe net (flash/erase/reset/read_memory).
     /// Talks to the box debug service on port 8765.
     pub fn debug(&self, name: impl Into<String>) -> AsyncDebugNet<'_> {
-        AsyncDebugNet { client: self, name: name.into() }
+        AsyncDebugNet { client: self, name: name.into(), record: Default::default() }
     }
 
     /// Handle for an oscilloscope net. **Stub:** see [`Scope`].
