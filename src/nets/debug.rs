@@ -27,6 +27,7 @@
 //! ```
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -35,8 +36,9 @@ use crate::error::{Error, Result};
 use crate::wire::{self, DebugConnection, DebugInfo, DebugStatus, Timeout};
 
 /// Base64-encode bytes with the standard alphabet (with padding). Kept
-/// in-crate so the debug feature adds no extra dependency.
-fn base64_encode(input: &[u8]) -> String {
+/// in-crate so firmware upload adds no extra dependency (also used by
+/// [`crate::nets::dfu`]).
+pub(crate) fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
@@ -264,12 +266,16 @@ pub(crate) fn read_firmware(path: &Path) -> Result<(Vec<u8>, FirmwareKind)> {
 /// Handle for a debug-probe net (blocking).
 ///
 /// Created via [`crate::LagerBox::debug`]. Cheap to construct; the net's
-/// saved record is fetched from the box on first use.
+/// saved record is fetched from the box on first use and cached on the
+/// handle (clones share the cache), so back-to-back debug ops pay for
+/// `/nets/list` once instead of per call. The cache is invalidated when an
+/// operation fails, so a re-saved net record is picked up on retry.
 #[cfg(feature = "blocking")]
 #[derive(Clone)]
 pub struct DebugNet<'a> {
     pub(crate) client: &'a crate::client::LagerBox,
     pub(crate) name: String,
+    pub(crate) record: Arc<Mutex<Option<Value>>>,
 }
 
 #[cfg(feature = "blocking")]
@@ -280,13 +286,26 @@ impl DebugNet<'_> {
     }
 
     fn net_record(&self) -> Result<Value> {
-        self.client.debug_net_record(&self.name)
+        if let Some(rec) = self.record.lock().unwrap().clone() {
+            return Ok(rec);
+        }
+        let rec = self.client.debug_net_record(&self.name)?;
+        *self.record.lock().unwrap() = Some(rec.clone());
+        Ok(rec)
     }
 
     fn call(&self, path: &str, body: Value, timeout: Timeout) -> Result<Value> {
         let req = wire::debug_request(path, body, timeout);
-        let (status, resp) = self.client.execute_debug(&req)?;
-        wire::parse_debug(status, resp)
+        let result = self
+            .client
+            .execute_debug(&req)
+            .and_then(|(status, resp)| wire::parse_debug(status, resp));
+        if result.is_err() {
+            // The failure may be a stale record (net re-saved, probe
+            // reassigned); re-resolve on the next call.
+            *self.record.lock().unwrap() = None;
+        }
+        result
     }
 
     /// Connect to the probe with default options (starts a GDB server).
@@ -415,6 +434,9 @@ impl std::io::Read for RttStream {
 
 /// Handle for a debug-probe net (async).
 ///
+/// The net's saved record is cached after first use exactly like the
+/// blocking [`DebugNet`] (invalidated when an operation fails).
+///
 /// RTT streaming is not provided on the async client yet; use the blocking
 /// [`DebugNet::rtt`] for log streaming.
 #[cfg(feature = "async")]
@@ -422,6 +444,7 @@ impl std::io::Read for RttStream {
 pub struct AsyncDebugNet<'a> {
     pub(crate) client: &'a crate::async_client::AsyncLagerBox,
     pub(crate) name: String,
+    pub(crate) record: Arc<Mutex<Option<Value>>>,
 }
 
 #[cfg(feature = "async")]
@@ -432,13 +455,26 @@ impl AsyncDebugNet<'_> {
     }
 
     async fn net_record(&self) -> Result<Value> {
-        self.client.debug_net_record(&self.name).await
+        if let Some(rec) = self.record.lock().unwrap().clone() {
+            return Ok(rec);
+        }
+        let rec = self.client.debug_net_record(&self.name).await?;
+        *self.record.lock().unwrap() = Some(rec.clone());
+        Ok(rec)
     }
 
     async fn call(&self, path: &str, body: Value, timeout: Timeout) -> Result<Value> {
         let req = wire::debug_request(path, body, timeout);
-        let (status, resp) = self.client.execute_debug(&req).await?;
-        wire::parse_debug(status, resp)
+        let result = match self.client.execute_debug(&req).await {
+            Ok((status, resp)) => wire::parse_debug(status, resp),
+            Err(e) => Err(e),
+        };
+        if result.is_err() {
+            // The failure may be a stale record (net re-saved, probe
+            // reassigned); re-resolve on the next call.
+            *self.record.lock().unwrap() = None;
+        }
+        result
     }
 
     /// Connect to the probe with default options (starts a GDB server).

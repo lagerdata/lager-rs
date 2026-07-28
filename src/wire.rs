@@ -1175,6 +1175,295 @@ pub(crate) fn value_list_field<T: DeserializeOwned>(
         .map_err(|e| Error::Decode(format!("invalid '{field}' shape: {e}")))
 }
 
+// ---------------------------------------------------------------------------
+// USB bus enumeration (GET /usb/devices)
+// ---------------------------------------------------------------------------
+
+/// Optional filters for [`crate::LagerBox::usb_devices_matching`], applied
+/// box-side. `vid`/`pid` are hex strings (with or without `0x`); `serial`
+/// is an exact iSerial match. An empty filter returns every device.
+#[derive(Debug, Clone, Default)]
+pub struct UsbDeviceFilter {
+    /// USB vendor id, hex (e.g. `"0483"`).
+    pub vid: Option<String>,
+    /// USB product id, hex (e.g. `"df11"`).
+    pub pid: Option<String>,
+    /// Exact iSerial string.
+    pub serial: Option<String>,
+}
+
+/// One USB device on the box's bus, read from sysfs by `GET /usb/devices`.
+/// String fields are `None` when the device does not expose the descriptor
+/// (e.g. `serial` on devices with no iSerial).
+#[derive(Debug, Clone, Deserialize)]
+pub struct UsbDeviceInfo {
+    /// sysfs entry name, e.g. `"1-1.4"`.
+    #[serde(default)]
+    pub sysfs_name: String,
+    /// Vendor id, lowercase hex (e.g. `"0483"`).
+    #[serde(default)]
+    pub vid: Option<String>,
+    /// Product id, lowercase hex (e.g. `"df11"`).
+    #[serde(default)]
+    pub pid: Option<String>,
+    /// iSerial descriptor.
+    #[serde(default)]
+    pub serial: Option<String>,
+    /// Product descriptor string.
+    #[serde(default)]
+    pub product: Option<String>,
+    /// Manufacturer descriptor string.
+    #[serde(default)]
+    pub manufacturer: Option<String>,
+    /// Bus number.
+    #[serde(default)]
+    pub busnum: Option<String>,
+    /// Device number on the bus (changes on re-enumeration).
+    #[serde(default)]
+    pub devnum: Option<String>,
+    /// Hub port path, e.g. `"1.4"`.
+    #[serde(default)]
+    pub devpath: Option<String>,
+    /// bDeviceClass, hex.
+    #[serde(default)]
+    pub device_class: Option<String>,
+    /// Negotiated speed in Mbps (`"1.5"`, `"12"`, `"480"`, ...).
+    #[serde(default)]
+    pub speed: Option<String>,
+}
+
+/// Percent-encode one query-string value (RFC 3986 unreserved set).
+fn encode_query_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Build a `GET /usb/devices` request with optional box-side filters.
+pub fn usb_devices(filter: &UsbDeviceFilter) -> HttpRequest {
+    let mut query = Vec::new();
+    for (key, value) in [
+        ("vid", &filter.vid),
+        ("pid", &filter.pid),
+        ("serial", &filter.serial),
+    ] {
+        if let Some(value) = value {
+            query.push(format!("{key}={}", encode_query_value(value)));
+        }
+    }
+    let path = if query.is_empty() {
+        "/usb/devices".to_string()
+    } else {
+        format!("/usb/devices?{}", query.join("&"))
+    };
+    HttpRequest {
+        method: Method::Get,
+        path,
+        body: None,
+        timeout: Timeout::Default,
+    }
+}
+
+/// Parse a `GET /usb/devices` response into device records.
+pub fn parse_usb_devices(status: u16, body: Value) -> Result<Vec<UsbDeviceInfo>> {
+    if status == 404 {
+        return Err(usb_devices_unsupported());
+    }
+    let resp = parse_command(status, body)?;
+    let devices = resp
+        .extra
+        .get("devices")
+        .cloned()
+        .ok_or_else(|| Error::Decode("response has no 'devices' list".to_string()))?;
+    serde_json::from_value(devices)
+        .map_err(|e| Error::Decode(format!("invalid 'devices' shape: {e}")))
+}
+
+pub(crate) fn usb_devices_unsupported() -> Error {
+    Error::UnsupportedByBox {
+        message: "this box does not serve GET /usb/devices (requires box software >= 0.33.0)"
+            .to_string(),
+    }
+}
+
+/// Map a route-missing 404 (Flask's non-JSON default page) to
+/// [`Error::UnsupportedByBox`] with an endpoint-specific message. Real box
+/// errors carry JSON bodies and pass through untouched.
+pub(crate) fn map_route_missing(err: Error, unsupported: fn() -> Error) -> Error {
+    match err {
+        Error::Box {
+            status: 404,
+            ref message,
+        } if message.contains("non-JSON") => unsupported(),
+        other => other,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DFU (POST /usb/dfu)
+// ---------------------------------------------------------------------------
+
+/// One device reported by `dfu-util -l` (via [`crate::nets::dfu::Dfu::list`]).
+#[derive(Debug, Clone, Deserialize)]
+pub struct DfuDevice {
+    /// `"DFU"` (in DFU mode) or `"Runtime"` (app running, DFU-capable).
+    #[serde(default)]
+    pub mode: String,
+    /// Vendor id, lowercase hex.
+    #[serde(default)]
+    pub vid: String,
+    /// Product id, lowercase hex.
+    #[serde(default)]
+    pub pid: String,
+    /// Device number on the bus.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub devnum: Option<i64>,
+    /// Configuration index.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub cfg: Option<i64>,
+    /// Interface index.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub intf: Option<i64>,
+    /// Alternate setting index.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub alt: Option<i64>,
+    /// Interface name (e.g. `"@Internal Flash /0x08000000/..."`).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Device serial.
+    #[serde(default)]
+    pub serial: Option<String>,
+    /// Hub port path, e.g. `"1-1.4"`.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// Captured output of one box-side `dfu-util` run.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DfuOutput {
+    /// dfu-util exit code (0 on the success envelope).
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub exit_code: Option<i64>,
+    /// Captured stdout.
+    #[serde(default)]
+    pub stdout: String,
+    /// Captured stderr (dfu-util writes progress here).
+    #[serde(default)]
+    pub stderr: String,
+}
+
+pub(crate) fn dfu_unsupported() -> Error {
+    Error::UnsupportedByBox {
+        message: "this box does not serve POST /usb/dfu (requires box software >= 0.33.0)"
+            .to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Box lock / reservation (GET/POST /lock, /lock/heartbeat, /unlock)
+// ---------------------------------------------------------------------------
+
+/// Box lock state, as returned by the `/lock` family of endpoints (the same
+/// ones `lager boxes lock` uses). `locked: false` with everything else
+/// `None` means the box is free.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BoxLock {
+    /// Whether the box is currently locked.
+    #[serde(default)]
+    pub locked: bool,
+    /// Lock holder.
+    #[serde(default)]
+    pub user: Option<String>,
+    /// Holder classification (`"user"`, `"ci"`, `"ephemeral"`, or another
+    /// service's reservation origin).
+    #[serde(default)]
+    pub holder_type: Option<String>,
+    /// When the lock was acquired (ISO 8601 UTC).
+    #[serde(default)]
+    pub locked_at: Option<String>,
+    /// Last heartbeat (ISO 8601 UTC).
+    #[serde(default)]
+    pub last_heartbeat: Option<String>,
+    /// Lock TTL in seconds; `None` means the lock never auto-expires.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub ttl_seconds: Option<i64>,
+    /// On acquire: the holder before this call (`None` when the box was
+    /// free). Distinguishes "just acquired" from "already held it".
+    #[serde(default)]
+    pub previous_user: Option<String>,
+}
+
+/// Build a `GET /lock` request.
+pub fn lock_status() -> HttpRequest {
+    get("/lock")
+}
+
+/// Build a `POST /lock` request. `ttl_seconds: None` sends JSON `null`
+/// (an eternal lock, matching `lager boxes lock`).
+pub fn lock_acquire(user: &str, holder_type: &str, ttl_seconds: Option<u64>) -> HttpRequest {
+    HttpRequest {
+        method: Method::Post,
+        path: "/lock".to_string(),
+        body: Some(json!({
+            "user": user,
+            "holder_type": holder_type,
+            "ttl_seconds": ttl_seconds,
+        })),
+        timeout: Timeout::Default,
+    }
+}
+
+/// Build a `POST /lock/heartbeat` request.
+pub fn lock_heartbeat(user: &str) -> HttpRequest {
+    HttpRequest {
+        method: Method::Post,
+        path: "/lock/heartbeat".to_string(),
+        body: Some(json!({ "user": user })),
+        timeout: Timeout::Default,
+    }
+}
+
+/// Build a `POST /unlock` request.
+pub fn unlock(user: &str, force: bool) -> HttpRequest {
+    HttpRequest {
+        method: Method::Post,
+        path: "/unlock".to_string(),
+        body: Some(json!({ "user": user, "force": force })),
+        timeout: Timeout::Default,
+    }
+}
+
+/// Parse a `/lock` family response. These endpoints return the raw lock
+/// dict on 200 and `{"error": ..., "lock": {...}}` on contention
+/// (409 acquire, 403 heartbeat/unlock, 404 heartbeat on an unlocked box).
+pub fn parse_lock(status: u16, body: Value) -> Result<BoxLock> {
+    if status == 200 {
+        return serde_json::from_value(body)
+            .map_err(|e| Error::Decode(format!("invalid lock state: {e}")));
+    }
+    let message = body
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("lock request failed")
+        .to_string();
+    Err(Error::Box { status, message })
+}
+
+pub(crate) fn lock_unsupported() -> Error {
+    Error::UnsupportedByBox {
+        message: "this box does not serve the /lock endpoints on port 9000; \
+                  update the box software"
+            .to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

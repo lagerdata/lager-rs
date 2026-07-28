@@ -15,7 +15,12 @@ box-side.
 service on port 8765. Arm, webcam, router, and solar nets are covered as
 `/net/command` roles, and the box-level BLE / WiFi / BluFi capabilities have
 dedicated `POST /{ble,wifi,blufi}/command` endpoints — see the README and the
-`nets::{arm,webcam,router,solar,ble,wifi,blufi}` docs.)
+`nets::{arm,webcam,router,solar,ble,wifi,blufi}` docs.
+
+Closed by box 0.33.0 + crate 0.3: generic USB bus enumeration
+(`GET /usb/devices` → `lager.usb_devices()`), box-side USB-DFU flashing
+(`POST /usb/dfu` → `lager.dfu()`), and the box lock/reservation API
+(`/lock`, `/lock/heartbeat`, `/unlock` → `lager.lock()` and friends).)
 
 ## Oscilloscope / logic analyzer (`Scope` stub)
 

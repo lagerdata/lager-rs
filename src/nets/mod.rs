@@ -12,6 +12,7 @@ pub mod ble;
 pub mod blufi;
 pub mod dac;
 pub mod debug;
+pub mod dfu;
 pub mod eload;
 pub mod energy;
 pub mod gpio;
