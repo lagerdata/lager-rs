@@ -2,7 +2,7 @@
 //! DFU-capable devices, download firmware, and detach — no host-side USB
 //! tooling required.
 //!
-//! The box must have `dfu-util` installed (`lager box config apt add
+//! The box must have `dfu-util` installed (`lager box-config apt add
 //! dfu-util`) and serve `POST /usb/dfu` (box software >= 0.33.0; older
 //! boxes fail with [`crate::Error::UnsupportedByBox`]).
 //!
