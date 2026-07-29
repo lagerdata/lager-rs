@@ -112,7 +112,7 @@ newer surfaces need a newer box image and fail with
 | --- | --- |
 | `UsbPort::state()` | >= 0.29.0 |
 | `usb_devices()` / `usb_devices_matching()` | >= 0.33.0 |
-| `dfu()` (`list`/`download`/`detach`) | >= 0.33.0 (plus `dfu-util` installed: `lager box config apt add dfu-util`) |
+| `dfu()` (`list`/`download`/`detach`) | >= 0.33.0 (plus `dfu-util` installed: `lager box-config apt add dfu-util`) |
 | `lock()` / `unlock()` / `lock_status()` / `lock_heartbeat()` | any box serving `/lock` on port 9000 |
 
 ## Features

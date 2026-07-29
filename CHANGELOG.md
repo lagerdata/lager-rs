@@ -20,7 +20,7 @@ All notable changes to the `lager-net` crate are documented here.
   `-s` DfuSe address, and `-R` reset; `detach(opts)` maps to `dfu-util -e`.
   Together with `usb_devices()` this removes the last reasons to keep a
   host-side Python USB transport next to the crate. Requires box >= 0.33.0
-  and `dfu-util` installed (`lager box config apt add dfu-util`).
+  and `dfu-util` installed (`lager box-config apt add dfu-util`).
 
 - **Box lock / reservation API** — `lock(user)` (eternal, like `lager
   boxes lock`), `lock_with(user, holder_type, ttl_seconds)`,
