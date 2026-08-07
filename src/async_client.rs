@@ -32,7 +32,7 @@ use crate::nets::watt::AsyncWattMeter;
 use crate::nets::webcam::AsyncWebcam;
 use crate::nets::wifi::AsyncWifi;
 use crate::wire::{
-    self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, Op, Timeout,
+    self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, Op, SafetyLimits, Timeout,
     UsbDeviceFilter, UsbDeviceInfo,
 };
 
@@ -225,6 +225,7 @@ impl AsyncLagerBox {
         let mut r = match req.method {
             Method::Get => self.http.get(&url),
             Method::Post => self.http.post(&url),
+            Method::Put => self.http.put(&url),
         };
         match req.timeout {
             Timeout::Default => r = r.timeout(self.default_timeout),
@@ -407,6 +408,54 @@ impl AsyncLagerBox {
     /// (`lager boxes unlock --force`).
     pub async fn unlock_force(&self, user: &str) -> Result<()> {
         self.lock_call(&wire::unlock(user, true)).await.map(|_| ())
+    }
+
+    // -- per-net safety limits ------------------------------------------------
+
+    /// Set the safety limits on a saved net (`PUT /nets/<name>/safety-limits`,
+    /// box >= 0.35.0). Returns the limits the box applied.
+    ///
+    /// The PUT **replaces** the net's whole limits record: fields left `None`
+    /// in `limits` are removed from the net, not preserved. Read the current
+    /// limits first ([`AsyncLagerBox::safety_limits`]) if you mean to change
+    /// one ceiling and keep the rest. An all-`None` `limits` clears the
+    /// record, same as [`AsyncLagerBox::clear_safety_limits`].
+    ///
+    /// The ceilings are enforced by the box's hardware service, out of reach
+    /// of test scripts; a setpoint (or inline `ovp=`/`ocp=` trip) above a
+    /// ceiling is refused before it touches the instrument. Older boxes fail
+    /// with [`Error::UnsupportedByBox`]; validation refusals (`max_power`,
+    /// non-positive ceilings) and an unknown net come back as [`Error::Box`].
+    pub async fn set_safety_limits(
+        &self,
+        name: &str,
+        limits: &SafetyLimits,
+    ) -> Result<Option<SafetyLimits>> {
+        match self.execute(&wire::safety_limits_set(name, limits)).await {
+            Ok((status, body)) => wire::parse_safety_limits(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::safety_limits_unsupported)),
+        }
+    }
+
+    /// Remove a net's safety limits, returning it to unrestricted.
+    pub async fn clear_safety_limits(&self, name: &str) -> Result<()> {
+        self.set_safety_limits(name, &SafetyLimits::default())
+            .await
+            .map(|_| ())
+    }
+
+    /// Read the safety limits configured on a saved net, via `/nets/list`.
+    /// `Ok(None)` means the net exists and is unrestricted; a missing net is
+    /// an [`Error::Box`] with status 404.
+    pub async fn safety_limits(&self, name: &str) -> Result<Option<SafetyLimits>> {
+        let nets = self.nets().await?;
+        nets.iter()
+            .find(|rec| rec.name == name)
+            .map(|rec| rec.safety_limits)
+            .ok_or_else(|| Error::Box {
+                status: 404,
+                message: format!("no saved net named '{name}' on this box"),
+            })
     }
 
     // -- net handle constructors ---------------------------------------------

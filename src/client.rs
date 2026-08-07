@@ -29,7 +29,7 @@ use crate::nets::watt::WattMeter;
 use crate::nets::webcam::Webcam;
 use crate::nets::wifi::Wifi;
 use crate::wire::{
-    self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, Op, Timeout,
+    self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, Op, SafetyLimits, Timeout,
     UsbDeviceFilter, UsbDeviceInfo,
 };
 use crate::BOX_HOST_ENV;
@@ -204,7 +204,9 @@ impl LagerBox {
 
     /// Token to attach right now: builder/env token, cached session token,
     /// or a store lookup when the box is already known to be gated.
-    fn current_token(&self) -> Option<String> {
+    /// `pub(crate)`: the Socket.IO session openers (uart, rtt) attach it to
+    /// their handshake too.
+    pub(crate) fn current_token(&self) -> Option<String> {
         if let Some(token) = self.auth.cached_token() {
             return Some(token);
         }
@@ -228,6 +230,7 @@ impl LagerBox {
         let mut r = match req.method {
             Method::Get => self.agent.request("GET", &url),
             Method::Post => self.agent.request("POST", &url),
+            Method::Put => self.agent.request("PUT", &url),
         };
         match req.timeout {
             Timeout::Default => r = r.timeout(self.default_timeout),
@@ -238,7 +241,7 @@ impl LagerBox {
             r = r.set("Authorization", &format!("Bearer {token}"));
         }
         let outcome = match (&req.method, &req.body) {
-            (Method::Post, Some(body)) => r.send_json(body.clone()),
+            (Method::Post | Method::Put, Some(body)) => r.send_json(body.clone()),
             _ => r.call(),
         };
         let resp = match outcome {
@@ -501,6 +504,53 @@ impl LagerBox {
         let user = user.into();
         self.lock(&user)?;
         Ok(BoxLockGuard { client: self, user, released: false })
+    }
+
+    // -- per-net safety limits ------------------------------------------------
+
+    /// Set the safety limits on a saved net (`PUT /nets/<name>/safety-limits`,
+    /// box >= 0.35.0). Returns the limits the box applied.
+    ///
+    /// The PUT **replaces** the net's whole limits record: fields left `None`
+    /// in `limits` are removed from the net, not preserved. Read the current
+    /// limits first ([`LagerBox::safety_limits`]) if you mean to change one
+    /// ceiling and keep the rest. An all-`None` `limits` clears the record,
+    /// same as [`LagerBox::clear_safety_limits`].
+    ///
+    /// The ceilings are enforced by the box's hardware service, out of reach
+    /// of test scripts; a setpoint (or inline `ovp=`/`ocp=` trip) above a
+    /// ceiling is refused before it touches the instrument. Older boxes fail
+    /// with [`Error::UnsupportedByBox`]; validation refusals (`max_power`,
+    /// non-positive ceilings) and an unknown net come back as [`Error::Box`].
+    pub fn set_safety_limits(
+        &self,
+        name: &str,
+        limits: &SafetyLimits,
+    ) -> Result<Option<SafetyLimits>> {
+        match self.execute(&wire::safety_limits_set(name, limits)) {
+            Ok((status, body)) => wire::parse_safety_limits(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::safety_limits_unsupported)),
+        }
+    }
+
+    /// Remove a net's safety limits, returning it to unrestricted.
+    pub fn clear_safety_limits(&self, name: &str) -> Result<()> {
+        self.set_safety_limits(name, &SafetyLimits::default())
+            .map(|_| ())
+    }
+
+    /// Read the safety limits configured on a saved net, via `/nets/list`.
+    /// `Ok(None)` means the net exists and is unrestricted; a missing net is
+    /// an [`Error::Box`] with status 404.
+    pub fn safety_limits(&self, name: &str) -> Result<Option<SafetyLimits>> {
+        let nets = self.nets()?;
+        nets.iter()
+            .find(|rec| rec.name == name)
+            .map(|rec| rec.safety_limits)
+            .ok_or_else(|| Error::Box {
+                status: 404,
+                message: format!("no saved net named '{name}' on this box"),
+            })
     }
 
     // -- net handle constructors ---------------------------------------------

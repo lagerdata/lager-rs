@@ -9,7 +9,8 @@
 
 use httpmock::prelude::*;
 use lager::{
-    BatteryMode, EloadMode, Error, LagerBox, Level, SpiConfig, SpiOptions, WaitForLevelOptions,
+    BatteryMode, EloadMode, Error, LagerBox, Level, SafetyLimits, SpiConfig, SpiOptions,
+    WaitForLevelOptions,
 };
 use serde_json::json;
 
@@ -1126,7 +1127,7 @@ fn health_and_status() {
                 "netCommand": true,
                 "netCommandRoles": ["gpio", "adc", "arm", "webcam", "router"],
                 "bleCommand": true, "wifiCommand": true, "blufiCommand": false,
-                "customDevices": true, "binaries": true
+                "customDevices": true, "binaries": true, "safetyLimits": true
             }
         }));
     });
@@ -1140,6 +1141,7 @@ fn health_and_status() {
     assert!(!status.capabilities.blufi_command);
     assert!(status.capabilities.custom_devices);
     assert!(status.capabilities.binaries);
+    assert!(status.capabilities.safety_limits);
     assert!(status
         .capabilities
         .net_command_roles
@@ -1977,6 +1979,159 @@ fn scope_is_a_stub() {
 }
 
 // ---------------------------------------------------------------------------
+// Per-net safety limits (PUT /nets/<name>/safety-limits, box >= 0.35.0)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_safety_limits_sends_only_set_fields() {
+    // The box's key set is closed and an explicit null means "do not store
+    // this key", so unset fields must be absent from the body, not null.
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(PUT)
+            .path("/nets/supply1/safety-limits")
+            .json_body(json!({"max_voltage": 5.0, "allow_destructive": false}));
+        then.status(200).json_body(json!({
+            "ok": true, "name": "supply1",
+            "safety_limits": {"max_voltage": 5.0, "allow_destructive": false}
+        }));
+    });
+    let lager = client(&server);
+    let applied = lager
+        .set_safety_limits(
+            "supply1",
+            &SafetyLimits {
+                max_voltage: Some(5.0),
+                allow_destructive: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(applied.max_voltage, Some(5.0));
+    assert_eq!(applied.max_current, None);
+    assert_eq!(applied.allow_destructive, Some(false));
+    m.assert();
+}
+
+#[test]
+fn clear_safety_limits_sends_empty_object() {
+    // `{}` is the box's documented "back to unrestricted" body; it echoes
+    // `safety_limits: null` back.
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(PUT)
+            .path("/nets/supply1/safety-limits")
+            .json_body(json!({}));
+        then.status(200)
+            .json_body(json!({"ok": true, "name": "supply1", "safety_limits": null}));
+    });
+    let lager = client(&server);
+    lager.clear_safety_limits("supply1").unwrap();
+    m.assert();
+}
+
+#[test]
+fn safety_limits_validation_refusal_stays_a_box_error() {
+    // The box refuses max_power with its reason rather than storing a limit
+    // nothing enforces. That 400 is a genuine refusal, not a missing route,
+    // and must surface verbatim.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(PUT).path("/nets/supply1/safety-limits");
+        then.status(400).json_body(json!({
+            "error": "max_power is not supported: one setter call establishes \
+                      either voltage or current, never both, so a power ceiling \
+                      could not be evaluated honestly. Use max_voltage and max_current."
+        }));
+    });
+    let lager = client(&server);
+    let err = lager
+        .set_safety_limits("supply1", &SafetyLimits::default())
+        .unwrap_err();
+    match err {
+        Error::Box { status, message } => {
+            assert_eq!(status, 400);
+            assert!(message.contains("max_power"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn safety_limits_unknown_net_stays_a_box_404() {
+    // The route exists but the net does not: a JSON 404 from the handler,
+    // which must NOT be reclassified as an unsupported box.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(PUT).path("/nets/ghost/safety-limits");
+        then.status(404)
+            .json_body(json!({"error": "no saved net named 'ghost'"}));
+    });
+    let lager = client(&server);
+    let err = lager
+        .set_safety_limits("ghost", &SafetyLimits::default())
+        .unwrap_err();
+    match err {
+        Error::Box { status, message } => {
+            assert_eq!(status, 404);
+            assert!(message.contains("ghost"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn safety_limits_missing_route_maps_to_unsupported() {
+    // A pre-0.35.0 box has no such rule, so Flask answers with its HTML 404
+    // page. That is a box-too-old condition, not a request problem.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(PUT).path("/nets/supply1/safety-limits");
+        then.status(404)
+            .header("content-type", "text/html")
+            .body("<!doctype html><title>404 Not Found</title>");
+    });
+    let lager = client(&server);
+    let err = lager
+        .set_safety_limits("supply1", &SafetyLimits::default())
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedByBox { .. }),
+        "unexpected error: {err:?}"
+    );
+    assert!(err.to_string().contains("0.35.0"));
+}
+
+#[test]
+fn safety_limits_read_back_from_nets_list() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/nets/list");
+        then.status(200).json_body(json!([
+            {"name": "supply1", "role": "power-supply",
+             "safety_limits": {"max_voltage": 12.0, "max_current": 2.5}},
+            {"name": "gpio1", "role": "gpio"},
+        ]));
+    });
+    let lager = client(&server);
+
+    let limits = lager.safety_limits("supply1").unwrap().unwrap();
+    assert_eq!(limits.max_voltage, Some(12.0));
+    assert_eq!(limits.max_current, Some(2.5));
+    assert_eq!(limits.allow_destructive, None);
+
+    // A net with no limits key is unrestricted, not an error...
+    assert!(lager.safety_limits("gpio1").unwrap().is_none());
+
+    // ...while a net that does not exist is a 404.
+    match lager.safety_limits("ghost").unwrap_err() {
+        Error::Box { status, .. } => assert_eq!(status, 404),
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Async client parity (same wire layer, so a spot check suffices)
 // ---------------------------------------------------------------------------
 
@@ -2037,5 +2192,35 @@ mod async_parity {
             lager.adc("nope").read().await.unwrap_err(),
             Error::Box { status: 404, .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn async_set_safety_limits_sends_identical_request() {
+        let server = MockServer::start_async().await;
+        let m = server
+            .mock_async(|when, then| {
+                when.method(PUT)
+                    .path("/nets/supply1/safety-limits")
+                    .json_body(json!({"max_current": 1.5}));
+                then.status(200).json_body(json!({
+                    "ok": true, "name": "supply1",
+                    "safety_limits": {"max_current": 1.5}
+                }));
+            })
+            .await;
+        let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();
+        let applied = lager
+            .set_safety_limits(
+                "supply1",
+                &SafetyLimits {
+                    max_current: Some(1.5),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(applied.max_current, Some(1.5));
+        m.assert_async().await;
     }
 }

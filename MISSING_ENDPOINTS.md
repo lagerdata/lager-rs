@@ -20,7 +20,12 @@ dedicated `POST /{ble,wifi,blufi}/command` endpoints — see the README and the
 Closed by box 0.33.0 + crate 0.3: generic USB bus enumeration
 (`GET /usb/devices` → `lager.usb_devices()`), box-side USB-DFU flashing
 (`POST /usb/dfu` → `lager.dfu()`), and the box lock/reservation API
-(`/lock`, `/lock/heartbeat`, `/unlock` → `lager.lock()` and friends).)
+(`/lock`, `/lock/heartbeat`, `/unlock` → `lager.lock()` and friends).
+
+Closed by box 0.35.0 + crate 0.4: per-net safety limits
+(`PUT /nets/<name>/safety-limits` → `lager.set_safety_limits()` and
+friends) and bi-directional RTT (the Socket.IO `/rtt` namespace →
+`debug.rtt_interactive()`, feature `rtt`).)
 
 ## Oscilloscope / logic analyzer (`Scope` stub)
 
@@ -44,4 +49,5 @@ stubbed:
 - `Rotation` / `Actuate` nets
 - net CRUD (`PUT/DELETE :9000/nets/...`) — the box already serves these;
   they can be added to the crate quickly if test suites need to manage nets
-  programmatically.
+  programmatically. (The safety-limits corner of this surface —
+  `PUT /nets/<name>/safety-limits` — is served since crate 0.4.)

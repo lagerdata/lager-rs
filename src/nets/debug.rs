@@ -122,7 +122,7 @@ const RESET_TIMEOUT: Timeout = Timeout::After(Duration::from_secs(10));
 const MEMRD_TIMEOUT: Timeout = Timeout::After(Duration::from_secs(30));
 const QUICK_TIMEOUT: Timeout = Timeout::After(Duration::from_secs(10));
 
-/// Options for [`DebugNet::rtt`] / RTT streaming.
+/// Options for [`DebugNet::rtt`] / RTT streaming (one-way and interactive).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RttOptions {
     /// RTT channel (0 or 1).
@@ -131,6 +131,9 @@ pub struct RttOptions {
     pub search_addr: Option<u64>,
     /// Size of the RAM region to search, in bytes (advanced).
     pub search_size: Option<u64>,
+    /// Read chunk size on the box side (J-Link only, advanced). Only used
+    /// by interactive RTT; the one-way HTTP stream ignores it.
+    pub chunk_size: Option<u64>,
 }
 
 /// Build the JSON body for a debug op: the full net record plus extra params.
@@ -411,6 +414,54 @@ impl DebugNet<'_> {
         let req = wire::debug_request("/debug/rtt", body, Timeout::Unbounded);
         let reader = self.client.stream_debug(&req)?;
         Ok(RttStream { reader })
+    }
+
+    /// Open a bi-directional RTT session on channel 0 (feature `rtt`,
+    /// box software >= 0.35.0).
+    ///
+    /// Unlike [`DebugNet::rtt`], the returned session can also **write** to
+    /// the target's RTT down-channel, so firmware that reads commands over
+    /// RTT can be driven from a test:
+    ///
+    /// ```no_run
+    /// # #[cfg(all(feature = "blocking", feature = "rtt"))]
+    /// # fn demo() -> lager::Result<()> {
+    /// use std::time::Duration;
+    /// use lager::LagerBox;
+    ///
+    /// let lager = LagerBox::from_env()?;
+    /// let debug = lager.debug("debug1");
+    /// debug.connect()?;                       // gdbserver must be up first
+    ///
+    /// let mut rtt = debug.rtt_interactive()?;
+    /// rtt.write_str("self_test\n")?;
+    /// rtt.wait_for(b"self_test: pass", Duration::from_secs(5))?;
+    /// # Ok(())
+    /// # }
+    /// # fn main() {}
+    /// ```
+    ///
+    /// Two prerequisites (see [`crate::nets::rtt`] for the full story): the
+    /// gdbserver must already be running — call [`DebugNet::connect`] first —
+    /// and writing needs a firmware-declared RTT **down** buffer on the
+    /// channel (`defmt-rtt` alone only provides the up buffer; without one
+    /// the target silently discards writes).
+    #[cfg(feature = "rtt")]
+    pub fn rtt_interactive(&self) -> Result<crate::nets::rtt::RttSession> {
+        self.rtt_interactive_with(&RttOptions::default())
+    }
+
+    /// Open a bi-directional RTT session with explicit options
+    /// (feature `rtt`). `opts.channel` selects the RTT channel in both
+    /// directions.
+    #[cfg(feature = "rtt")]
+    pub fn rtt_interactive_with(&self, opts: &RttOptions) -> Result<crate::nets::rtt::RttSession> {
+        crate::nets::rtt::RttSession::open(
+            self.client.base_url(),
+            self.name.clone(),
+            opts,
+            self.client.current_token(),
+        )
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "lager-net"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -24,6 +24,9 @@ blocking = ["dep:ureq"]
 async = ["dep:reqwest", "dep:tokio"]
 # UART streaming over the box's Socket.IO /uart namespace.
 uart = ["blocking", "dep:rust_socketio"]
+# Interactive (bi-directional) RTT over the box's Socket.IO /rtt namespace.
+# Requires box software >= 0.35.0.
+rtt = ["blocking", "dep:rust_socketio"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

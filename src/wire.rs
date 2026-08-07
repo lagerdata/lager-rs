@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::error::{Error, Result};
@@ -24,13 +24,15 @@ pub const DEBUG_SERVICE_PORT: u16 = 8765;
 /// 10-second budget.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// HTTP method of a request. The box API only uses GET and POST.
+/// HTTP method of a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     /// HTTP GET.
     Get,
     /// HTTP POST with a JSON body.
     Post,
+    /// HTTP PUT with a JSON body (`/nets/<name>/safety-limits`).
+    Put,
 }
 
 /// Client-side timeout policy for one request.
@@ -595,6 +597,10 @@ pub struct NetRecord {
     /// Role-specific saved parameters (SPI mode, UART baudrate, ...).
     #[serde(default)]
     pub params: Option<Map<String, Value>>,
+    /// Safety ceilings the box enforces on this net (box >= 0.35.0).
+    /// `None` means unrestricted.
+    #[serde(default)]
+    pub safety_limits: Option<SafetyLimits>,
     /// Everything else in the record (mappings, scope_points, ...).
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -655,6 +661,12 @@ pub struct BoxCapabilities {
     /// by this crate; surfaced for callers probing box features.
     #[serde(default)]
     pub binaries: bool,
+    /// Whether the box serves `PUT /nets/<name>/safety-limits` (box >=
+    /// 0.35.0). The flag mirrors route registration rather than the version
+    /// string, so a box whose nets handler failed to import reads `false`
+    /// here even if its version says otherwise.
+    #[serde(default, rename = "safetyLimits")]
+    pub safety_limits: bool,
 }
 
 /// Response of `GET /status`.
@@ -1464,6 +1476,87 @@ pub(crate) fn lock_unsupported() -> Error {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Per-net safety limits (PUT /nets/<name>/safety-limits, box >= 0.35.0)
+// ---------------------------------------------------------------------------
+
+/// Voltage/current ceilings and the destructive-op switch enforced by the
+/// box on a saved net.
+///
+/// A `PUT` **replaces** the net's whole limits record with the fields set
+/// here: a `None` field is *removed* from the net, not preserved. Read the
+/// current limits first (they ride along on `/nets/list` records as
+/// [`NetRecord::safety_limits`]) if you mean to change one ceiling and keep
+/// the others.
+///
+/// There is deliberately no `max_power`: one setter call establishes either
+/// voltage or current, never both, so the box cannot evaluate a power
+/// ceiling honestly and refuses the key rather than storing something
+/// nothing enforces.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct SafetyLimits {
+    /// Voltage ceiling in volts. Must be positive; also caps inline `ovp=`
+    /// trip settings, which would otherwise lift the instrument's own guard
+    /// above the net ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_voltage: Option<f64>,
+    /// Current ceiling in amps. Must be positive; also caps inline `ocp=`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_current: Option<f64>,
+    /// `Some(false)` makes the box refuse erase and flash on this net.
+    /// Absent means allowed (the box treats a missing key as unrestricted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_destructive: Option<bool>,
+}
+
+impl SafetyLimits {
+    /// True when no field is set — as a PUT body this clears the net's
+    /// limits, returning it to unrestricted.
+    pub fn is_empty(&self) -> bool {
+        self.max_voltage.is_none() && self.max_current.is_none() && self.allow_destructive.is_none()
+    }
+}
+
+/// Build a `PUT /nets/<name>/safety-limits` request. An empty `limits`
+/// serialises to `{}`, the box's documented "back to unrestricted" body.
+pub fn safety_limits_set(name: &str, limits: &SafetyLimits) -> HttpRequest {
+    HttpRequest {
+        method: Method::Put,
+        path: format!("/nets/{name}/safety-limits"),
+        body: Some(serde_json::to_value(limits).unwrap_or_else(|_| json!({}))),
+        timeout: Timeout::Default,
+    }
+}
+
+/// Parse a `PUT /nets/<name>/safety-limits` response into the applied
+/// limits (`None` when the body cleared them). Validation refusals (unknown
+/// key, `max_power`, non-positive ceiling) and a missing net come back as
+/// [`Error::Box`] carrying the box's message.
+pub fn parse_safety_limits(status: u16, body: Value) -> Result<Option<SafetyLimits>> {
+    if status == 200 {
+        return match body.get("safety_limits") {
+            None | Some(Value::Null) => Ok(None),
+            Some(limits) => serde_json::from_value(limits.clone())
+                .map(Some)
+                .map_err(|e| Error::Decode(format!("invalid safety_limits shape: {e}"))),
+        };
+    }
+    let message = body
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("safety-limits request failed")
+        .to_string();
+    Err(Error::Box { status, message })
+}
+
+pub(crate) fn safety_limits_unsupported() -> Error {
+    Error::UnsupportedByBox {
+        message: "this box does not serve PUT /nets/<name>/safety-limits \
+                  (requires box software >= 0.35.0)"
+            .to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1531,5 +1624,89 @@ mod tests {
         assert_eq!(state.voltage, Some(3.3));
         assert_eq!(state.current, None);
         assert_eq!(state.enabled, Some(true));
+    }
+
+    #[test]
+    fn safety_limits_body_omits_unset_fields() {
+        // The box refuses unknown keys and treats an explicit null as "do
+        // not store this key", so unset fields must vanish from the body
+        // entirely rather than ride along as nulls.
+        let req = safety_limits_set(
+            "supply1",
+            &SafetyLimits {
+                max_voltage: Some(5.0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(req.method, Method::Put);
+        assert_eq!(req.path, "/nets/supply1/safety-limits");
+        assert_eq!(req.body, Some(json!({ "max_voltage": 5.0 })));
+
+        let clear = safety_limits_set("supply1", &SafetyLimits::default());
+        assert_eq!(clear.body, Some(json!({})));
+        assert!(SafetyLimits::default().is_empty());
+    }
+
+    #[test]
+    fn parse_safety_limits_roundtrip_and_clear() {
+        let applied = parse_safety_limits(
+            200,
+            json!({"ok": true, "name": "supply1",
+                   "safety_limits": {"max_voltage": 5.0, "allow_destructive": false}}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(applied.max_voltage, Some(5.0));
+        assert_eq!(applied.max_current, None);
+        assert_eq!(applied.allow_destructive, Some(false));
+
+        // A clearing PUT echoes `safety_limits: null`.
+        let cleared =
+            parse_safety_limits(200, json!({"ok": true, "safety_limits": null})).unwrap();
+        assert!(cleared.is_none());
+    }
+
+    #[test]
+    fn parse_safety_limits_surfaces_box_refusals() {
+        let err = parse_safety_limits(
+            400,
+            json!({"error": "max_power is not supported: ..."}),
+        )
+        .unwrap_err();
+        match err {
+            Error::Box { status, message } => {
+                assert_eq!(status, 400);
+                assert!(message.contains("max_power"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn net_record_carries_safety_limits() {
+        let rec: NetRecord = serde_json::from_value(json!({
+            "name": "supply1", "role": "power-supply",
+            "safety_limits": {"max_voltage": 12.0, "max_current": 2.5},
+        }))
+        .unwrap();
+        let limits = rec.safety_limits.unwrap();
+        assert_eq!(limits.max_voltage, Some(12.0));
+        assert_eq!(limits.max_current, Some(2.5));
+        assert_eq!(limits.allow_destructive, None);
+
+        // Absent key means unrestricted, not an error.
+        let rec: NetRecord =
+            serde_json::from_value(json!({"name": "gpio1", "role": "gpio"})).unwrap();
+        assert!(rec.safety_limits.is_none());
+    }
+
+    #[test]
+    fn capabilities_parse_safety_limits_flag() {
+        let caps: BoxCapabilities =
+            serde_json::from_value(json!({"netCommand": true, "safetyLimits": true})).unwrap();
+        assert!(caps.safety_limits);
+        // A box predating the flag omits the key, which reads as false.
+        let caps: BoxCapabilities = serde_json::from_value(json!({"netCommand": true})).unwrap();
+        assert!(!caps.safety_limits);
     }
 }
