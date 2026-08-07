@@ -281,3 +281,84 @@ fn uart_streams() {
     eprintln!("received {} bytes", out.len());
     uart.stop().unwrap();
 }
+
+#[cfg(feature = "rtt")]
+#[test]
+#[ignore = "requires a live box (>= 0.35.0) + LAGER_TEST_DEBUG_NET with RTT firmware running"]
+fn rtt_interactive_round_trip() {
+    use std::time::Duration;
+
+    let Some(name) = net_from_env("LAGER_TEST_DEBUG_NET") else {
+        return;
+    };
+    let lager = lager();
+    let debug = lager.debug(&name);
+
+    // The box refuses start_rtt without a gdbserver attached to the probe.
+    debug.connect().unwrap();
+
+    let mut rtt = debug.rtt_interactive().unwrap();
+    eprintln!(
+        "rtt open: {} channel {} via {}",
+        rtt.netname(),
+        rtt.channel(),
+        rtt.backend()
+    );
+
+    // Write down-channel and collect a couple of seconds of up-channel
+    // output. What comes back (defmt frames, an echo, nothing) depends on
+    // the firmware, so the assertion stops at "the session round-trips":
+    // firmware without a down buffer silently discards the write, and
+    // that is a target-side fact, not a transport failure.
+    rtt.write(b"hello from lager-net\n").unwrap();
+    let out = rtt.read(Duration::from_secs(2)).unwrap();
+    eprintln!("received {} bytes on the up-channel", out.len());
+    rtt.stop().unwrap();
+
+    debug.disconnect(false).unwrap();
+}
+
+#[test]
+#[ignore = "requires a live box (>= 0.35.0) + LAGER_TEST_SAFETY_NET; briefly rewrites its saved limits"]
+fn safety_limits_round_trip() {
+    use lager::SafetyLimits;
+
+    let Some(name) = net_from_env("LAGER_TEST_SAFETY_NET") else {
+        return;
+    };
+    let lager = lager();
+
+    // Limits persist in the box's saved-net store, so remember what was
+    // there and put it back at the end.
+    let before = lager.safety_limits(&name).unwrap();
+    eprintln!("{name}: limits before: {before:?}");
+
+    let applied = lager
+        .set_safety_limits(
+            &name,
+            &SafetyLimits {
+                max_voltage: Some(5.0),
+                max_current: Some(0.5),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .expect("box echoed no limits back");
+    assert_eq!(applied.max_voltage, Some(5.0));
+    assert_eq!(applied.max_current, Some(0.5));
+
+    // Read-back through /nets/list must agree with what the PUT echoed.
+    let read_back = lager.safety_limits(&name).unwrap().unwrap();
+    assert_eq!(read_back, applied);
+
+    // Restore the net's prior state.
+    match before {
+        Some(previous) => {
+            lager.set_safety_limits(&name, &previous).unwrap();
+        }
+        None => lager.clear_safety_limits(&name).unwrap(),
+    }
+    let after = lager.safety_limits(&name).unwrap();
+    assert_eq!(after, before);
+    eprintln!("{name}: limits restored: {after:?}");
+}

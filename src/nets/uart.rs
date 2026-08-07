@@ -9,10 +9,11 @@
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use rust_socketio::{ClientBuilder, Payload};
+use rust_socketio::ClientBuilder;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
+use crate::nets::sio::{hex_decode, hex_encode, payload_json};
 
 /// How long to wait for the box to confirm the serial port opened.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -24,35 +25,6 @@ enum UartEvent {
     Status(String),
     Error(String),
     Stopped,
-}
-
-fn hex_encode(data: &[u8]) -> String {
-    let mut s = String::with_capacity(data.len() * 2);
-    for b in data {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    let s = s.trim();
-    if s.len() % 2 != 0 {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
-}
-
-/// Pull the first JSON object out of a Socket.IO payload.
-fn payload_json(payload: Payload) -> Option<Value> {
-    match payload {
-        Payload::Text(values) => values.into_iter().next(),
-        #[allow(deprecated)]
-        Payload::String(s) => serde_json::from_str(&s).ok(),
-        Payload::Binary(_) => None,
-    }
 }
 
 /// A live UART streaming session.
@@ -321,16 +293,3 @@ impl Drop for Uart {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{hex_decode, hex_encode};
-
-    #[test]
-    fn hex_roundtrip() {
-        let data = [0x00, 0x0a, 0xff, 0x42];
-        assert_eq!(hex_encode(&data), "000aff42");
-        assert_eq!(hex_decode(&hex_encode(&data)).unwrap(), data);
-        assert!(hex_decode("zz").is_none());
-        assert!(hex_decode("abc").is_none());
-    }
-}

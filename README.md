@@ -22,7 +22,7 @@ box's debug service on port 8765.
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.3" }
+lager = { package = "lager-net", version = "0.4" }
 ```
 
 ```rust
@@ -72,7 +72,7 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | `Arm` | `lager.arm(name)` | `position`, `move_to`/`move_by`, `go_home`, motor enable/disable, `set_acceleration` |
 | `Webcam` | `lager.webcam(name)` | `start`/`stop` MJPEG stream, `url`, `status` |
 | `Router` | `lager.router(name)` | `system_info`, interfaces/clients/leases, `block_internet`, generic `command(action, params)` |
-| `DebugNet` | `lager.debug(name)` | `connect`, `flash`, `erase`, `reset`, `read_memory`, `info`/`status`, `rtt` (blocking) |
+| `DebugNet` | `lager.debug(name)` | `connect`, `flash`, `erase`, `reset`, `read_memory`, `info`/`status`, `rtt` (blocking), `rtt_interactive` *(feature `rtt`)* |
 | `Uart` | `lager.uart(name)?` *(feature `uart`)* | streaming `read`, non-blocking `try_read`, `write`, `wait_for(b"boot ok", ...)` |
 
 Box-level capabilities (the box's own hardware, no net name):
@@ -114,6 +114,8 @@ newer surfaces need a newer box image and fail with
 | `usb_devices()` / `usb_devices_matching()` | >= 0.33.0 |
 | `dfu()` (`list`/`download`/`detach`) | >= 0.33.0 (plus `dfu-util` installed: `lager box-config apt add dfu-util`) |
 | `lock()` / `unlock()` / `lock_status()` / `lock_heartbeat()` | any box serving `/lock` on port 9000 |
+| `set_safety_limits()` / `clear_safety_limits()` / `safety_limits()` | >= 0.35.0 (`status().capabilities.safety_limits`) |
+| `DebugNet::rtt_interactive()` *(feature `rtt`)* | >= 0.35.0 |
 
 ## Features
 
@@ -122,12 +124,13 @@ newer surfaces need a newer box image and fail with
 | `blocking` | yes | `LagerBox` on [`ureq`] — tiny dependency tree, no tokio |
 | `async` | no | `AsyncLagerBox` on [`reqwest`]/tokio; same methods, `.await`ed |
 | `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace |
+| `rtt` | no | bi-directional `RttSession` over the box's Socket.IO `/rtt` namespace (box >= 0.35.0) |
 
 Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.3", features = ["async"] }
+lager = { package = "lager-net", version = "0.4", features = ["async"] }
 ```
 
 ## Parallel tests and instrument safety
@@ -205,9 +208,58 @@ let mut lines = BufReader::new(debug.rtt()?).lines();
 assert!(lines.next().transpose()?.unwrap().contains("boot ok"));
 ```
 
+With the `rtt` feature (box >= 0.35.0), the session can also **write** to
+the target's RTT down-channel, so firmware with an RTT console can be
+driven from the test:
+
+```rust
+use std::time::Duration;
+
+let debug = lager.debug("debug1");
+debug.connect()?;                       // gdbserver must be up first
+
+let mut rtt = debug.rtt_interactive()?;
+rtt.write_str("self_test\n")?;
+let out = rtt.wait_for(b"self_test: pass", Duration::from_secs(5))?;
+rtt.stop()?;
+```
+
+Two prerequisites worth knowing before debugging a "silent" session: the
+box refuses `start_rtt` without a connected gdbserver (call
+`debug.connect()` first), and writing needs a firmware-declared RTT
+**down** buffer on the channel — `defmt-rtt` alone only provides the up
+buffer, and a target without a down buffer silently discards what it is
+sent. Bytes are raw in both directions: `defmt` output stays compressed
+binary (pipe it through `defmt-print -e <elf>` to read it), while
+plain-text consoles work with `wait_for` directly.
+
 If the debug service is reached through an SSH tunnel, point the crate at it
 with `LagerBox::builder(host).debug_service_url("http://127.0.0.1:8765")` or
 the `LAGER_DEBUG_SERVICE_URL` env var.
+
+## Per-net safety limits
+
+Boxes >= 0.35.0 enforce per-net voltage/current ceilings in their hardware
+service, out of reach of test scripts — a setpoint (or inline `ovp=`/`ocp=`
+trip) above a ceiling is refused before it touches the instrument:
+
+```rust
+use lager::SafetyLimits;
+
+lager.set_safety_limits("supply1", &SafetyLimits {
+    max_voltage: Some(5.0),
+    max_current: Some(0.5),
+    ..Default::default()
+})?;
+
+let limits = lager.safety_limits("supply1")?;   // rides on /nets/list
+lager.clear_safety_limits("supply1")?;          // back to unrestricted
+```
+
+A set call **replaces** the net's whole limits record (unset fields are
+removed, not preserved), `allow_destructive: Some(false)` makes the box
+refuse erase/flash on the net, and there is deliberately no `max_power` —
+the box refuses the key rather than storing a limit nothing enforces.
 
 ## Not yet on the HTTP API
 

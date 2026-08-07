@@ -11,13 +11,14 @@
 //! ESP32 provisioning ([`LagerBox::blufi`]) — are exposed the same way.
 //! Debug-probe nets ([`nets::debug::DebugNet`]) talk to the box's debug
 //! service on port 8765 for flash/erase/reset/memory-read and RTT log
-//! streaming.
+//! streaming; behind the `rtt` feature they also open bi-directional
+//! (interactive) RTT sessions against boxes >= 0.35.0.
 //!
 //! # Quickstart
 //!
 //! ```toml
 //! [dev-dependencies]
-//! lager = { package = "lager-net", version = "0.3" }
+//! lager = { package = "lager-net", version = "0.4" }
 //! ```
 //!
 //! ```no_run
@@ -72,6 +73,8 @@
 //! - `async`: the [`AsyncLagerBox`] client on `reqwest`/tokio. Both clients
 //!   share one wire layer ([`wire`]) so they cannot drift.
 //! - `uart`: streaming UART sessions over Socket.IO ([`nets::uart::Uart`]).
+//! - `rtt`: bi-directional RTT sessions over Socket.IO
+//!   ([`nets::rtt::RttSession`], box >= 0.35.0).
 //!
 //! # Not yet on the HTTP API
 //!
@@ -152,13 +155,17 @@ pub use nets::{
 #[cfg(feature = "uart")]
 pub use nets::uart::Uart;
 
+#[cfg(feature = "rtt")]
+pub use nets::rtt::RttSession;
+
 // Structured result types, re-exported from the wire layer.
 pub use wire::{
     ArmPosition, BatteryState, BleCharacteristic, BleDevice, BleDeviceInfo, BleService,
     BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxLock,
     BoxStatus, DfuDevice, DfuOutput, EloadState, EnergyReading, EnergyStats, Health, NetRecord,
-    NetSummary, RouterSystemInfo, StatSummary, SupplyState, UsbDeviceFilter, UsbDeviceInfo,
-    WattReading, WebcamStatus, WebcamStream, WifiAccessPoint, WifiConnection, WifiInterface,
+    NetSummary, RouterSystemInfo, SafetyLimits, StatSummary, SupplyState, UsbDeviceFilter,
+    UsbDeviceInfo, WattReading, WebcamStatus, WebcamStream, WifiAccessPoint, WifiConnection,
+    WifiInterface,
 };
 pub use nets::i2c::I2cEffectiveConfig;
 pub use nets::spi::SpiEffectiveConfig;
