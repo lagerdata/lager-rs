@@ -2,6 +2,55 @@
 
 All notable changes to the `lager-net` crate are documented here.
 
+## [0.5.0] - 2026-08-27
+
+Catch-up release against box software 0.43.0: everything the box gained
+since 0.35.0 that is reachable over its HTTP API is now covered.
+
+### Added
+
+- **`usb.cycle()` / `cycle_with_off_time(secs)` / `recover()`** — power-cycle
+  a hub port (off, wait, on; box-validated off window 0.5-10s, default 1s
+  set above the slowest cold boot measured on real hardware) and re-power a
+  port left dark by an interrupted command. `cycle` returns
+  `Option<bool>`: whether the device re-enumerated, or `None` when the port
+  was empty or the hub cannot observe it. Works on every supported hub type
+  (Acroname, Yepkit, and the Plugable RTS5411 docks box 0.39.0 added).
+  Requires box >= 0.39.0; older boxes fail with `Error::UnsupportedByBox`.
+  Do not script "device absent" checks around these: an unpowered port
+  raises no change bit, so the device stays in lsusb until power returns —
+  `cycle`'s return value is the observable that actually exists.
+
+- **`lager.nets_state()`** — typed `GET /nets/state` on both clients: brief
+  live state for every saved net under the box's shared 8s probe budget,
+  with `state: None` plus a `reason` / `reason_code` for instruments that
+  are slow, wedged, absent, or have no live-state probe. Safe as a bench
+  health check: one wedged instrument can neither fail the request nor
+  block the others' answers. Requires box >= 0.34.0.
+
+- **`ConnectOptions.jlink_script` / `openocd_config`** — per-connection
+  debug scripts, base64-encoded onto `/debug/connect` and taking precedence
+  over a script saved on the net. An OpenOCD override must be a *complete*
+  cfg that selects the adapter driver (lager still appends its own
+  `ftdi channel <N>`, which dies unless a cfg selected the ftdi adapter
+  first).
+
+### Changed
+
+- **`ConnectOptions.halt` documents what it actually does** — reset-then-halt,
+  honored on the OpenOCD backend by box >= 0.43.0 (older boxes pinned it to
+  `false` there; J-Link always honored it). The box's new halt-in-place
+  (`DebugNet.halt()`, OpenOCD's bare `halt`) exists only in the on-box
+  `lager python` API — the debug service exposes no HTTP endpoint for it —
+  so the crate cannot reach it; see `MISSING_ENDPOINTS.md`.
+
+Not covered, deliberately: oscilloscope / logic-analyzer workflows (still on
+the legacy exec path, `Scope` stays a documented stub), FTDI per-net channel
+selection (`params.interface` is saved-net configuration, done at net-add
+time — the crate drives nets by name and read-back already carries `params`),
+and `lager python` remote-script job control (the crate exists to replace
+those scripts with Rust).
+
 ## [0.4.0] - 2026-08-06
 
 First-class support for the two features box software 0.35.0 shipped:

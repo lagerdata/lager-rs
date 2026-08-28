@@ -29,8 +29,8 @@ use crate::nets::watt::WattMeter;
 use crate::nets::webcam::Webcam;
 use crate::nets::wifi::Wifi;
 use crate::wire::{
-    self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, Op, SafetyLimits, Timeout,
-    UsbDeviceFilter, UsbDeviceInfo,
+    self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, NetState, Op, SafetyLimits,
+    Timeout, UsbDeviceFilter, UsbDeviceInfo,
 };
 use crate::BOX_HOST_ENV;
 
@@ -537,6 +537,19 @@ impl LagerBox {
     pub fn clear_safety_limits(&self, name: &str) -> Result<()> {
         self.set_safety_limits(name, &SafetyLimits::default())
             .map(|_| ())
+    }
+
+    /// Brief live state for every saved net (`GET /nets/state`,
+    /// box >= 0.34.0): what `lager nets state` shows. One entry per saved
+    /// net; an instrument that is slow, wedged or absent yields
+    /// `state: None` with a reason rather than failing the request, so this
+    /// is safe to call as a bench health check. Older boxes fail with
+    /// [`Error::UnsupportedByBox`].
+    pub fn nets_state(&self) -> Result<Vec<NetState>> {
+        match self.execute(&wire::nets_state()) {
+            Ok((status, body)) => wire::parse_nets_state(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::nets_state_unsupported)),
+        }
     }
 
     /// Read the safety limits configured on a saved net, via `/nets/list`.

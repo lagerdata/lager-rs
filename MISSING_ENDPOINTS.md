@@ -25,7 +25,27 @@ Closed by box 0.33.0 + crate 0.3: generic USB bus enumeration
 Closed by box 0.35.0 + crate 0.4: per-net safety limits
 (`PUT /nets/<name>/safety-limits` → `lager.set_safety_limits()` and
 friends) and bi-directional RTT (the Socket.IO `/rtt` namespace →
-`debug.rtt_interactive()`, feature `rtt`).)
+`debug.rtt_interactive()`, feature `rtt`).
+
+Closed by crate 0.5 (catch-up through box 0.43.0): USB port power-cycling
+and recovery (`cycle`/`recover` on `/usb/command`, box 0.39.0 →
+`usb.cycle()` / `recover()`), live net state (`GET /nets/state`, box
+0.34.0 → `lager.nets_state()`), and per-connection debug scripts
+(`jlink_script` / `openocd_config` on `/debug/connect` →
+`ConnectOptions`).)
+
+## Halt-in-place (`DebugNet::halt()`)
+
+Today: box 0.43.0's `DebugNet.halt()` — OpenOCD's bare `halt`, stopping the
+core without pulsing nRESET, which matters on parts executing in place out
+of QSPI — exists only in the on-box `lager python` API, where it drives the
+OpenOCD TCL RPC directly. The debug service on port 8765 exposes no
+`/debug/halt` endpoint, so no HTTP client can reach it.
+
+Needed: a `POST /debug/halt` route on the debug service (OpenOCD only;
+J-Link has no halt-in-place primitive and the service should answer with
+the same "use a halt-first .JLinkScript" guidance the Python API gives).
+The crate would then add `DebugNet::halt()` next to `reset()`.
 
 ## Oscilloscope / logic analyzer (`Scope` stub)
 
@@ -50,4 +70,10 @@ stubbed:
 - net CRUD (`PUT/DELETE :9000/nets/...`) — the box already serves these;
   they can be added to the crate quickly if test suites need to manage nets
   programmatically. (The safety-limits corner of this surface —
-  `PUT /nets/<name>/safety-limits` — is served since crate 0.4.)
+  `PUT /nets/<name>/safety-limits` — is served since crate 0.4.) FTDI
+  per-net channel selection (`params.interface`, box 0.43.0) falls in the
+  same bucket: it is saved-net configuration written at net-add time, and
+  the crate's `nets()` read-back already carries it inside `params`.
+- `lager python` remote-script execution and job control (submit / detach /
+  reattach / kill) — the crate exists to replace those box-side Python
+  scripts with Rust running on the host, so driving them is a non-goal.

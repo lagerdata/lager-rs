@@ -81,6 +81,45 @@ fn connect_resolves_record_and_sends_defaults() {
 }
 
 #[test]
+fn connect_with_carries_base64_scripts_and_halt() {
+    use lager::ConnectOptions;
+
+    let server = MockServer::start();
+    let nets = mock_nets_list(&server);
+    // "foobar" -> base64 "Zm9vYmFy" (verified against reference vectors);
+    // "baz" -> "YmF6".
+    let connect = server.mock(|when, then| {
+        when.method(POST).path("/debug/connect").json_body(json!({
+            "net": debug_record(),
+            "force": true,
+            "halt": true,
+            "gdb": true,
+            "jlink_script": "Zm9vYmFy",
+            "openocd_config": "YmF6"
+        }));
+        then.status(200).json_body(json!({
+            "status": "connected",
+            "backend": "jlink",
+            "message": "ready"
+        }));
+    });
+
+    let lager = client(&server);
+    lager
+        .debug("debug1")
+        .connect_with(&ConnectOptions {
+            force: true,
+            halt: true,
+            jlink_script: Some(b"foobar".to_vec()),
+            openocd_config: Some(b"baz".to_vec()),
+            ..Default::default()
+        })
+        .unwrap();
+    nets.assert();
+    connect.assert();
+}
+
+#[test]
 fn flash_sends_base64_hexfile() {
     let server = MockServer::start();
     let nets = mock_nets_list(&server);

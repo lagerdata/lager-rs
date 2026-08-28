@@ -752,6 +752,103 @@ fn usb_state_bad_request_stays_a_box_error() {
     assert!(matches!(err, Error::Box { status: 400, .. }));
 }
 
+#[test]
+fn usb_cycle_default_omits_off_time_and_reads_reconnected() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/usb/command").json_body(json!({
+            "netname": "usb1", "action": "cycle"
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "cycle", "state": "enabled",
+            "message": "USB port 'usb1' power-cycled; device re-enumerated",
+            "reconnected": true
+        }));
+    });
+    let lager = client(&server);
+    assert_eq!(lager.usb("usb1").cycle().unwrap(), Some(true));
+    m.assert();
+}
+
+#[test]
+fn usb_cycle_with_off_time_sends_it_and_handles_unobserved() {
+    // A port with nothing on it (or a hub that cannot observe
+    // re-enumeration) omits `reconnected`; that is "unconfirmed", not
+    // "did not come back".
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/usb/command").json_body(json!({
+            "netname": "usb1", "action": "cycle", "off_time": 2.5
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "cycle", "state": "enabled",
+            "message": "USB port 'usb1' power-cycled; no device on this port"
+        }));
+    });
+    let lager = client(&server);
+    assert_eq!(lager.usb("usb1").cycle_with_off_time(2.5).unwrap(), None);
+    m.assert();
+}
+
+#[test]
+fn usb_recover_sends_plain_action() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/usb/command").json_body(json!({
+            "netname": "usb1", "action": "recover"
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "recover", "state": "enabled",
+            "message": "USB port 'usb1': power restored on port(s) 1, 3"
+        }));
+    });
+    let lager = client(&server);
+    lager.usb("usb1").recover().unwrap();
+    m.assert();
+}
+
+#[test]
+fn usb_cycle_maps_pre_0_39_rejection_to_unsupported() {
+    // A 0.29-0.38 box's action list stops at `state`; that 400 means the
+    // box is too old, not that the request was malformed.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/usb/command");
+        then.status(400).json_body(json!({
+            "success": false,
+            "error": "netname and action (enable|disable|toggle|state) are required"
+        }));
+    });
+    let lager = client(&server);
+    let err = lager.usb("usb1").cycle().unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedByBox { .. }),
+        "unexpected error: {err:?}"
+    );
+    assert!(err.to_string().contains("0.39.0"));
+
+    let err = lager.usb("usb1").recover().unwrap_err();
+    assert!(matches!(err, Error::UnsupportedByBox { .. }));
+}
+
+#[test]
+fn usb_cycle_bad_request_on_current_box_stays_a_box_error() {
+    // A current box enumerates cycle/recover; its 400 is a genuine bad
+    // request (e.g. off_time out of range) and must NOT be reclassified.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/usb/command");
+        then.status(400).json_body(json!({
+            "success": false,
+            "error": "netname and action (enable|disable|toggle|state|cycle|recover) \
+                      are required"
+        }));
+    });
+    let lager = client(&server);
+    let err = lager.usb("usb1").cycle().unwrap_err();
+    assert!(matches!(err, Error::Box { status: 400, .. }));
+}
+
 // ---------------------------------------------------------------------------
 // USB bus enumeration (GET /usb/devices)
 // ---------------------------------------------------------------------------
@@ -2129,6 +2226,56 @@ fn safety_limits_read_back_from_nets_list() {
         Error::Box { status, .. } => assert_eq!(status, 404),
         other => panic!("unexpected error: {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Live net state (GET /nets/state, box >= 0.34.0)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nets_state_parses_states_and_null_reasons() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(GET).path("/nets/state");
+        then.status(200).json_body(json!([
+            {"name": "usb1", "role": "usb", "state": "enabled"},
+            {"name": "supply1", "role": "power-supply", "state": "3.300V, ON"},
+            {"name": "uart1", "role": "uart", "state": null,
+             "reason": "no probe for role"},
+            {"name": "usb2", "role": "usb", "state": null,
+             "reason": "not probed: slower instruments consumed the state budget",
+             "reason_code": "hub-skipped"},
+        ]));
+    });
+    let lager = client(&server);
+    let states = lager.nets_state().unwrap();
+    assert_eq!(states.len(), 4);
+    assert_eq!(states[0].state.as_deref(), Some("enabled"));
+    assert!(states[0].reason.is_none());
+    assert_eq!(states[2].state, None);
+    assert_eq!(states[2].reason.as_deref(), Some("no probe for role"));
+    assert_eq!(states[3].reason_code.as_deref(), Some("hub-skipped"));
+    m.assert();
+}
+
+#[test]
+fn nets_state_missing_route_maps_to_unsupported() {
+    // A pre-0.34.0 box has no /nets/state rule; Flask answers with its HTML
+    // 404 page.
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/nets/state");
+        then.status(404)
+            .header("content-type", "text/html")
+            .body("<!doctype html><title>404 Not Found</title>");
+    });
+    let lager = client(&server);
+    let err = lager.nets_state().unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedByBox { .. }),
+        "unexpected error: {err:?}"
+    );
+    assert!(err.to_string().contains("0.34.0"));
 }
 
 // ---------------------------------------------------------------------------

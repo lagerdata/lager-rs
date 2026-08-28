@@ -207,6 +207,28 @@ pub fn usb_command(netname: &str, action: &str) -> HttpRequest {
     }
 }
 
+/// Build a `POST /usb/command` cycle request (box >= 0.39.0). `off_time` is
+/// the unpowered window in seconds (box default 1s, range 0.5-10); it rides
+/// in the body only when set, so an older box that predates the key never
+/// sees it. The client timeout is widened past the off window plus the
+/// box-side re-enumeration watch, so a healthy slow cold boot is not
+/// aborted mid-cycle.
+pub fn usb_cycle(netname: &str, off_time: Option<f64>) -> HttpRequest {
+    let mut body = json!({
+        "netname": netname,
+        "action": "cycle",
+    });
+    if let Some(secs) = off_time {
+        body["off_time"] = json!(secs);
+    }
+    HttpRequest {
+        method: Method::Post,
+        path: "/usb/command".to_string(),
+        body: Some(body),
+        timeout: Timeout::After(Duration::from_secs_f64(30.0 + off_time.unwrap_or(1.0))),
+    }
+}
+
 /// Build a box-level command request (`POST /ble/command`, `/wifi/command`,
 /// `/blufi/command`). These endpoints drive the box's own hardware (its
 /// Bluetooth adapter or wlan interface) rather than a saved net, so the body
@@ -1553,6 +1575,77 @@ pub(crate) fn safety_limits_unsupported() -> Error {
     Error::UnsupportedByBox {
         message: "this box does not serve PUT /nets/<name>/safety-limits \
                   (requires box software >= 0.35.0)"
+            .to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Live net state (GET /nets/state, box >= 0.34.0)
+// ---------------------------------------------------------------------------
+
+/// Brief live state of one saved net, from `GET /nets/state`.
+///
+/// The box probes each physical instrument in parallel under a shared
+/// whole-request budget (8s), so a slow, wedged or absent instrument comes
+/// back with `state: None` and a [`NetState::reason`] instead of failing or
+/// delaying the rest of the bench.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NetState {
+    /// Net name.
+    pub name: String,
+    /// Net role (`"usb"`, `"power-supply"`, ...).
+    #[serde(default)]
+    pub role: String,
+    /// Live state (e.g. `"enabled"`, `"3.300V"`), or `None` when the box
+    /// could not read one — see [`NetState::reason`] for why.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Attached only when `state` is `None`: `"deadline"` (the shared
+    /// budget ran out before this net's instrument answered — not
+    /// necessarily this instrument's fault), `"no probe for role"` (uart,
+    /// spi, i2c, ... have no live-state probe), or `"unreadable: <detail>"`.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Stable machine-readable token alongside `reason` (e.g.
+    /// `"hub-skipped"`), when the box classified the fault. The human
+    /// `reason` is always complete on its own.
+    #[serde(default)]
+    pub reason_code: Option<String>,
+    /// Any further keys a newer box attaches.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Build a `GET /nets/state` request. The client timeout is widened past
+/// the box's own 8s probe budget so a fully-consumed budget still yields
+/// the (partial) answer rather than a client-side abort.
+pub fn nets_state() -> HttpRequest {
+    HttpRequest {
+        method: Method::Get,
+        path: "/nets/state".to_string(),
+        body: None,
+        timeout: Timeout::After(Duration::from_secs(15)),
+    }
+}
+
+/// Parse a `GET /nets/state` response (always 200 with one entry per saved
+/// net on boxes that serve it).
+pub fn parse_nets_state(status: u16, body: Value) -> Result<Vec<NetState>> {
+    if status != 200 {
+        let message = body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("nets/state request failed")
+            .to_string();
+        return Err(Error::Box { status, message });
+    }
+    serde_json::from_value(body)
+        .map_err(|e| Error::Decode(format!("invalid nets/state shape: {e}")))
+}
+
+pub(crate) fn nets_state_unsupported() -> Error {
+    Error::UnsupportedByBox {
+        message: "this box does not serve GET /nets/state (requires box software >= 0.34.0)"
             .to_string(),
     }
 }
