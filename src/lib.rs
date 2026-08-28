@@ -18,7 +18,7 @@
 //!
 //! ```toml
 //! [dev-dependencies]
-//! lager = { package = "lager-net", version = "0.4" }
+//! lager = { package = "lager-net", version = "0.5" }
 //! ```
 //!
 //! ```no_run
@@ -163,9 +163,9 @@ pub use wire::{
     ArmPosition, BatteryState, BleCharacteristic, BleDevice, BleDeviceInfo, BleService,
     BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxLock,
     BoxStatus, DfuDevice, DfuOutput, EloadState, EnergyReading, EnergyStats, Health, NetRecord,
-    NetSummary, RouterSystemInfo, SafetyLimits, StatSummary, SupplyState, UsbDeviceFilter,
-    UsbDeviceInfo, WattReading, WebcamStatus, WebcamStream, WifiAccessPoint, WifiConnection,
-    WifiInterface,
+    NetState, NetSummary, RouterSystemInfo, SafetyLimits, StatSummary, SupplyState,
+    UsbDeviceFilter, UsbDeviceInfo, WattReading, WebcamStatus, WebcamStream, WifiAccessPoint,
+    WifiConnection, WifiInterface,
 };
 pub use nets::i2c::I2cEffectiveConfig;
 pub use nets::spi::SpiEffectiveConfig;

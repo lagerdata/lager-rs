@@ -22,7 +22,7 @@ box's debug service on port 8765.
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.4" }
+lager = { package = "lager-net", version = "0.5" }
 ```
 
 ```rust
@@ -68,7 +68,7 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | `EnergyAnalyzer` | `lager.energy_analyzer(name)` | `read_energy`, `read_stats` |
 | `Spi` | `lager.spi(name)` | `configure`, `read`, `write`, `read_write`, `transfer` |
 | `I2c` | `lager.i2c(name)` | `configure`, `scan`, `read`, `write`, `write_read` |
-| `UsbPort` | `lager.usb(name)` | `enable`/`disable`/`toggle`/`state` |
+| `UsbPort` | `lager.usb(name)` | `enable`/`disable`/`toggle`/`state`, `cycle` (off-wait-on, reports re-enumeration), `recover` |
 | `Arm` | `lager.arm(name)` | `position`, `move_to`/`move_by`, `go_home`, motor enable/disable, `set_acceleration` |
 | `Webcam` | `lager.webcam(name)` | `start`/`stop` MJPEG stream, `url`, `status` |
 | `Router` | `lager.router(name)` | `system_info`, interfaces/clients/leases, `block_internet`, generic `command(action, params)` |
@@ -100,7 +100,10 @@ cannot wedge the box.
 Discovery and box health: `lager.nets()`, `lager.health()`, `lager.status()`
 (`status().capabilities.net_command` tells you the box image is new enough;
 `net_command_roles` / `ble_command` / `wifi_command` / `blufi_command` report
-the newer arm/webcam/router roles and box-level endpoints).
+the newer arm/webcam/router roles and box-level endpoints), and
+`lager.nets_state()` — brief live state for every saved net under the box's
+shared probe budget, with a `reason` on every net it could not read, so one
+wedged instrument neither fails the request nor hides the healthy ones.
 
 ## Minimum box version
 
@@ -114,8 +117,11 @@ newer surfaces need a newer box image and fail with
 | `usb_devices()` / `usb_devices_matching()` | >= 0.33.0 |
 | `dfu()` (`list`/`download`/`detach`) | >= 0.33.0 (plus `dfu-util` installed: `lager box-config apt add dfu-util`) |
 | `lock()` / `unlock()` / `lock_status()` / `lock_heartbeat()` | any box serving `/lock` on port 9000 |
+| `nets_state()` | >= 0.34.0 |
 | `set_safety_limits()` / `clear_safety_limits()` / `safety_limits()` | >= 0.35.0 (`status().capabilities.safety_limits`) |
 | `DebugNet::rtt_interactive()` *(feature `rtt`)* | >= 0.35.0 |
+| `UsbPort::cycle()` / `recover()` | >= 0.39.0 |
+| `ConnectOptions::halt` honored on the OpenOCD backend | >= 0.43.0 |
 
 ## Features
 
@@ -130,7 +136,7 @@ Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.4", features = ["async"] }
+lager = { package = "lager-net", version = "0.5", features = ["async"] }
 ```
 
 ## Parallel tests and instrument safety
@@ -232,6 +238,14 @@ buffer, and a target without a down buffer silently discards what it is
 sent. Bytes are raw in both directions: `defmt` output stays compressed
 binary (pipe it through `defmt-print -e <elf>` to read it), while
 plain-text consoles work with `wait_for` directly.
+
+`connect_with(&ConnectOptions { .. })` takes the probe options: `speed`,
+`force`, `halt` (reset-then-halt; honored on the OpenOCD backend by box >=
+0.43.0), and per-connection `jlink_script` / `openocd_config` contents that
+override a script saved on the net (an OpenOCD override must be a complete
+cfg that selects the adapter driver). Halt-in-place — OpenOCD's bare `halt`,
+no nRESET pulse — is not reachable over the debug service's HTTP API; see
+`MISSING_ENDPOINTS.md`.
 
 If the debug service is reached through an SSH tunnel, point the crate at it
 with `LagerBox::builder(host).debug_service_url("http://127.0.0.1:8765")` or

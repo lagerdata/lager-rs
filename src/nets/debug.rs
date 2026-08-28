@@ -97,10 +97,29 @@ pub struct ConnectOptions {
     pub speed: Option<String>,
     /// Force a fresh backend start even if one is already running.
     pub force: bool,
-    /// Halt the target immediately after connecting.
+    /// Halt the target on connect. This is reset-then-halt (the box runs
+    /// OpenOCD's `reset halt` / J-Link's halting connect), which pulses
+    /// nRESET and re-enters through the reset vector — on a part executing
+    /// in place out of QSPI that re-runs the bootloader. There is no
+    /// halt-in-place over the debug service's HTTP API today; on J-Link a
+    /// halt-first script via [`ConnectOptions::jlink_script`] is the
+    /// supported route. Honored on the OpenOCD backend by box >= 0.43.0
+    /// (older boxes pinned it to `false` on that backend; J-Link always
+    /// honored it).
     pub halt: bool,
     /// Start a GDB server (needed for reset/read_memory on some backends).
     pub gdb: bool,
+    /// Contents of a `.JLinkScript` to run for this connection (J-Link
+    /// backend only; ignored by OpenOCD). Rides base64-encoded in the
+    /// request and takes precedence over a script saved on the net.
+    pub jlink_script: Option<Vec<u8>>,
+    /// Contents of an OpenOCD `.cfg` for this connection (OpenOCD backend
+    /// only; ignored by J-Link). Must be a *complete* cfg that selects the
+    /// adapter driver — lager still appends its own `ftdi channel <N>` for
+    /// a net with a probe channel, and that command dies at startup unless
+    /// a cfg has selected the ftdi adapter first. Takes precedence over a
+    /// config saved on the net.
+    pub openocd_config: Option<Vec<u8>>,
 }
 
 impl Default for ConnectOptions {
@@ -110,6 +129,8 @@ impl Default for ConnectOptions {
             force: false,
             halt: false,
             gdb: true,
+            jlink_script: None,
+            openocd_config: None,
         }
     }
 }
@@ -159,6 +180,12 @@ pub(crate) mod ops {
         });
         if let Some(speed) = &opts.speed {
             extra["speed"] = json!(speed);
+        }
+        if let Some(script) = &opts.jlink_script {
+            extra["jlink_script"] = json!(base64_encode(script));
+        }
+        if let Some(cfg) = &opts.openocd_config {
+            extra["openocd_config"] = json!(base64_encode(cfg));
         }
         ("/debug/connect".into(), debug_body(net, extra), CONNECT_TIMEOUT)
     }
