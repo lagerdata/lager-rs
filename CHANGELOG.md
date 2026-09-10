@@ -2,6 +2,22 @@
 
 All notable changes to the `lager-net` crate are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **A pinned token no longer writes the CLI token store.** A gateway denial
+  recorded the box-to-auth-server mapping even when the token came from
+  `LagerBoxBuilder::bearer_token` or `LAGER_GATEWAY_TOKEN`, so a CI job that
+  supplied nothing but a token still left a `~/.lager_gateway_auth` behind
+  it. Nothing reads that mapping in pinned mode — the token is attached to
+  every request without a store lookup — and a self-hosted runner keeps its
+  filesystem between jobs, so the entry outlived the address it named and
+  was silently wrong once the box moved. The in-memory value still updates,
+  because the denial error names the auth server. This is what the crate's
+  own auth page already described, and what §6.3 of the gateway-auth
+  contract now states.
+
 ## [0.5.0] - 2026-08-27
 
 Catch-up release against box software 0.43.0: everything the box gained
