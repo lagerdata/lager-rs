@@ -15,7 +15,9 @@
 //!   `LAGER_GATEWAY_AUTH_FILE`) written by `lager login <url>`.
 //! - The box→auth-server mapping is learned from the discovery header and
 //!   recorded back into the store, exactly like the CLI, so the very first
-//!   denied request is retried with credentials within the same call.
+//!   denied request is retried with credentials within the same call. A
+//!   pinned token records nothing: it never reads that mapping, and a CI
+//!   runner must not be left holding one (contract §6.3).
 //! - Short-lived access tokens are refreshed transparently against
 //!   `POST <url>/api/auth/refresh`, replaying the cookies the auth server
 //!   set at login and persisting any rotations.
@@ -290,6 +292,13 @@ impl GatewayAuth {
 
     /// Record the box→auth-server mapping learned from a discovery header
     /// (memory + best-effort store write, like the CLI).
+    ///
+    /// The store write is skipped while a token is pinned. Nothing reads the
+    /// mapping in that mode — the token is attached to every request without
+    /// a lookup -- and CI is where writing it costs: a self-hosted runner
+    /// keeps its filesystem between jobs, so an entry written here outlives
+    /// the address it names and is silently wrong once that box moves. The
+    /// in-memory value still updates, because the denial error names it.
     pub(crate) fn learn_auth_server(&self, auth_url: &str) {
         let mut state = self.state.lock().unwrap();
         if state.auth_url.as_deref() == Some(auth_url) {
@@ -297,6 +306,9 @@ impl GatewayAuth {
         }
         state.auth_url = Some(auth_url.to_string());
         drop(state);
+        if self.static_token.is_some() {
+            return;
+        }
         let mut store = load_store();
         if let Some(root) = store.as_object_mut() {
             let boxes = root.entry("boxes").or_insert_with(|| json!({}));

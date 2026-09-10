@@ -163,7 +163,7 @@ fn builder_bearer_token_is_attached() {
 #[test]
 fn env_bearer_token_is_attached() {
     let _guard = env_lock();
-    let _store = StoreFile::with(&json!({}));
+    let store = StoreFile::with(&json!({}));
     let _token = EnvVar::set("LAGER_GATEWAY_TOKEN", "env-token");
     let server = MockServer::start();
     let m = server.mock(|when, then| {
@@ -175,6 +175,8 @@ fn env_bearer_token_is_attached() {
     let lager = LagerBox::connect(server.address().to_string()).unwrap();
     assert_eq!(lager.adc("adc1").read().unwrap(), 1.5);
     m.assert();
+    // The token came from the environment, so nothing belongs in the store.
+    assert_eq!(store.read(), json!({}));
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +341,29 @@ fn rejected_pinned_token_is_auth_required_without_retry() {
     assert!(err.to_string().contains("session was rejected"));
     // Pinned tokens are never replaced by store resolution: exactly one try.
     m.assert_hits(1);
+}
+
+#[test]
+fn pinned_token_records_no_mapping_on_denial() {
+    let _guard = env_lock();
+    let store = StoreFile::with(&json!({}));
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(401)
+            .header("X-Gateway-Auth-Url", "https://auth.example.com")
+            .json_body(json!({"error": "token revoked"}));
+    });
+    let lager = LagerBox::builder(server.address().to_string())
+        .bearer_token("ci-token")
+        .build()
+        .unwrap();
+    assert!(lager.adc("adc1").read().is_err());
+    // Contract §6.3: a pinned client writes no store. It never reads the
+    // mapping — the token goes on every request without a lookup — and CI
+    // is where the write costs: a self-hosted runner keeps its filesystem
+    // between jobs, so the entry outlives the address it names.
+    assert_eq!(store.read(), json!({}));
 }
 
 #[test]
