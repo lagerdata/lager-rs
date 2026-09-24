@@ -162,45 +162,65 @@ impl AsyncLagerBox {
     /// # }
     /// ```
     pub async fn debug_tunnel(&self, port: u16) -> Result<tokio::net::TcpStream> {
-        use crate::tunnel::Refusal;
+        use crate::tunnel::{self as tun, Refusal};
 
-        let token = self.current_token().await;
-        let refusal = match self.tunnel_once(port, token.as_deref()).await? {
-            Ok(stream) => return Ok(stream),
-            Err(refusal) => refusal,
-        };
-        let refusal = match refusal {
-            Refusal::Denied { status, auth_url } => {
-                self.auth.learn_auth_server(&auth_url);
-                let fresh = if status == 401 && !self.auth.has_static_token() {
-                    self.auth
-                        .resolve_token_async(&auth_url, token.as_deref())
-                        .await
-                } else {
-                    None
-                };
-                let Some(fresh) = fresh else {
-                    return Err(auth::denial_error(
-                        status,
-                        self.auth.box_host(),
-                        &auth_url,
-                        token.is_some(),
-                    ));
-                };
-                match self.tunnel_once(port, Some(&fresh)).await? {
-                    Ok(stream) => return Ok(stream),
-                    Err(refusal) => refusal,
+        // Wait out a 502 from a server that is still opening its port; see
+        // the blocking client. No other refusal is retried.
+        let deadline = std::time::Instant::now() + tun::NOTHING_LISTENING_WAIT;
+        let refusal = loop {
+            match self.tunnel_authorized(port).await? {
+                Ok(stream) => return Ok(stream),
+                Err(Refusal::NothingListening { .. })
+                    if std::time::Instant::now() + tun::NOTHING_LISTENING_RETRY <= deadline =>
+                {
+                    tokio::time::sleep(tun::NOTHING_LISTENING_RETRY).await;
                 }
+                Err(refusal) => break refusal,
             }
-            other => other,
         };
         match refusal {
             Refusal::Unsupported { .. } => self.debug_port_direct(port, &refusal).await,
-            other => Err(crate::tunnel::refusal_error(
-                &other,
+            other => Err(tun::refusal_error(&other, self.auth.box_host(), port)),
+        }
+    }
+
+    /// One `CONNECT` with the single refresh-and-retry after a 401; see
+    /// the blocking client's `tunnel_authorized`.
+    async fn tunnel_authorized(
+        &self,
+        port: u16,
+    ) -> Result<std::result::Result<tokio::net::TcpStream, crate::tunnel::Refusal>> {
+        use crate::tunnel::Refusal;
+
+        let token = self.current_token().await;
+        let (status, auth_url) = match self.tunnel_once(port, token.as_deref()).await? {
+            Err(Refusal::Denied { status, auth_url }) => (status, auth_url),
+            other => return Ok(other),
+        };
+        self.auth.learn_auth_server(&auth_url);
+        let fresh = if status == 401 && !self.auth.has_static_token() {
+            self.auth
+                .resolve_token_async(&auth_url, token.as_deref())
+                .await
+        } else {
+            None
+        };
+        let Some(fresh) = fresh else {
+            return Err(auth::denial_error(
+                status,
                 self.auth.box_host(),
-                port,
+                &auth_url,
+                token.is_some(),
+            ));
+        };
+        match self.tunnel_once(port, Some(&fresh)).await? {
+            Err(Refusal::Denied { status, auth_url }) => Err(auth::denial_error(
+                status,
+                self.auth.box_host(),
+                &auth_url,
+                true,
             )),
+            other => Ok(other),
         }
     }
 
@@ -294,7 +314,9 @@ impl AsyncLagerBox {
                 let _ = stream.set_nodelay(true);
                 Ok(stream)
             }
-            Err(_) if self.auth.auth_url().is_some() => {
+            // As in the blocking client: a token on the CONNECT (known-gated
+            // box, or a pinned token) means a gateway was in front.
+            Err(_) if self.auth.has_static_token() || self.auth.auth_url().is_some() => {
                 Err(crate::tunnel::refusal_error(refusal, host, port))
             }
             Err(e) => Err(e),

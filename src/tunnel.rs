@@ -17,6 +17,15 @@ use crate::error::{Error, Result};
 /// A response head larger than this is not a gateway talking to us.
 pub(crate) const MAX_HEAD_BYTES: usize = 64 * 1024;
 
+/// How long a 502 (nothing listening yet) is retried: a debug server the box
+/// has only just started can take a moment to open its port. Matches the
+/// CLI's `probe_tunnel`.
+pub(crate) const NOTHING_LISTENING_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The pause between those retries.
+pub(crate) const NOTHING_LISTENING_RETRY: std::time::Duration =
+    std::time::Duration::from_millis(250);
+
 /// How much of a refusal's body is read for the error message.
 pub(crate) const MAX_BODY_BYTES: usize = 4096;
 
