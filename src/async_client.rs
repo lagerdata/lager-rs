@@ -146,6 +146,161 @@ impl AsyncLagerBox {
         &self.base
     }
 
+    // -- raw access --------------------------------------------------------
+
+    /// Async twin of [`LagerBox::debug_tunnel`](crate::LagerBox::debug_tunnel):
+    /// a TCP stream to one of the box's debug ports, tunnelled through the
+    /// box's gateway when it has one and connected directly on a plain box.
+    ///
+    /// ```no_run
+    /// # async fn demo() -> lager::Result<()> {
+    /// let lager_box = lager::AsyncLagerBox::connect("192.168.1.42")?;
+    /// lager_box.debug("debug1").connect().await?;
+    /// let stream = lager_box.debug_tunnel(2331).await?;
+    /// # drop(stream);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn debug_tunnel(&self, port: u16) -> Result<tokio::net::TcpStream> {
+        use crate::tunnel::Refusal;
+
+        let token = self.current_token().await;
+        let refusal = match self.tunnel_once(port, token.as_deref()).await? {
+            Ok(stream) => return Ok(stream),
+            Err(refusal) => refusal,
+        };
+        let refusal = match refusal {
+            Refusal::Denied { status, auth_url } => {
+                self.auth.learn_auth_server(&auth_url);
+                let fresh = if status == 401 && !self.auth.has_static_token() {
+                    self.auth
+                        .resolve_token_async(&auth_url, token.as_deref())
+                        .await
+                } else {
+                    None
+                };
+                let Some(fresh) = fresh else {
+                    return Err(auth::denial_error(
+                        status,
+                        self.auth.box_host(),
+                        &auth_url,
+                        token.is_some(),
+                    ));
+                };
+                match self.tunnel_once(port, Some(&fresh)).await? {
+                    Ok(stream) => return Ok(stream),
+                    Err(refusal) => refusal,
+                }
+            }
+            other => other,
+        };
+        match refusal {
+            Refusal::Unsupported { .. } => self.debug_port_direct(port, &refusal).await,
+            other => Err(crate::tunnel::refusal_error(
+                &other,
+                self.auth.box_host(),
+                port,
+            )),
+        }
+    }
+
+    /// Async twin of [`LagerBox::bearer_token`](crate::LagerBox::bearer_token):
+    /// the bearer token this client attaches, or `None` for a plain box. An
+    /// escape hatch for raw HTTP calls the typed API does not cover yet.
+    pub async fn bearer_token(&self) -> Result<Option<String>> {
+        if let Some(token) = self.current_token().await {
+            return Ok(Some(token));
+        }
+        if self.auth.auth_url().is_none() {
+            self.health().await?;
+            if let Some(token) = self.current_token().await {
+                return Ok(Some(token));
+            }
+        }
+        match self.auth.auth_url() {
+            None => Ok(None),
+            Some(auth_url) => Err(Error::AuthRequired {
+                box_host: self.auth.box_host().to_string(),
+                message: format!("box {} requires sign-in", self.auth.box_host()),
+                auth_url,
+            }),
+        }
+    }
+
+    /// One `CONNECT` round trip; see the blocking client's `tunnel_once`.
+    async fn tunnel_once(
+        &self,
+        port: u16,
+        token: Option<&str>,
+    ) -> Result<std::result::Result<tokio::net::TcpStream, crate::tunnel::Refusal>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        use crate::tunnel::{self as tun, Refusal};
+
+        let (host, service_port) = tun::host_port(&self.debug_base)?;
+        let context = format!("debug tunnel via {host}:{service_port}");
+        let mut stream = connect_tcp(&host, service_port, self.default_timeout).await?;
+        let handshake = async {
+            stream
+                .write_all(&tun::connect_request(port, self.auth.box_host(), token))
+                .await?;
+            // One byte at a time, so no tunnel byte past the blank line is
+            // taken out of the socket.
+            let mut head = Vec::with_capacity(256);
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if head.len() >= tun::MAX_HEAD_BYTES || stream.read(&mut byte).await? == 0 {
+                    return Ok(None);
+                }
+                head.push(byte[0]);
+            }
+            let Some(head) = tun::parse_head(&head) else {
+                return Ok(None);
+            };
+            let mut body = vec![0u8; head.content_length.min(tun::MAX_BODY_BYTES)];
+            let got = if head.status == 200 {
+                0
+            } else {
+                stream.read(&mut body).await.unwrap_or(0)
+            };
+            let body = String::from_utf8_lossy(&body[..got]).trim().to_string();
+            Ok::<_, std::io::Error>(Some((head, body)))
+        };
+        let answer = tokio::time::timeout(self.default_timeout, handshake)
+            .await
+            .map_err(|_| Error::Timeout(format!("{context}: no answer")))?
+            .map_err(|e| tun::io_error(&context, e))?;
+        let Some((head, body)) = answer else {
+            return Ok(Err(Refusal::Unsupported { status: None }));
+        };
+        if head.status == 200 {
+            stream
+                .set_nodelay(true)
+                .map_err(|e| tun::io_error(&context, e))?;
+            return Ok(Ok(stream));
+        }
+        Ok(Err(tun::classify(&head, body)))
+    }
+
+    /// No tunnel: connect to the published port, as on a plain box.
+    async fn debug_port_direct(
+        &self,
+        port: u16,
+        refusal: &crate::tunnel::Refusal,
+    ) -> Result<tokio::net::TcpStream> {
+        let host = self.auth.box_host();
+        match connect_tcp(host, port, self.default_timeout).await {
+            Ok(stream) => {
+                let _ = stream.set_nodelay(true);
+                Ok(stream)
+            }
+            Err(_) if self.auth.auth_url().is_some() => {
+                Err(crate::tunnel::refusal_error(refusal, host, port))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     // -- transport ---------------------------------------------------------
 
     /// Send one request against the port-9000 server.
@@ -582,5 +737,15 @@ impl AsyncLagerBox {
     /// Handle for an oscilloscope net. **Stub:** see [`Scope`].
     pub fn scope(&self, name: impl Into<String>) -> Scope {
         Scope::new(name)
+    }
+}
+
+/// TCP connect with a timeout (tokio tries every resolved address).
+async fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<tokio::net::TcpStream> {
+    let context = format!("{host}:{port}");
+    match tokio::time::timeout(timeout, tokio::net::TcpStream::connect((host, port))).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(e)) => Err(crate::tunnel::io_error(&context, e)),
+        Err(_) => Err(Error::Timeout(format!("{context}: connect timed out"))),
     }
 }

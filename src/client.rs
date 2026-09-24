@@ -150,6 +150,193 @@ impl LagerBox {
         &self.base
     }
 
+    // -- raw access --------------------------------------------------------
+
+    /// Open a TCP stream to one of the box's debug ports: a GDB server
+    /// (2331-2342), OpenOCD telnet (4444-4447) or TCL (6666-6669), or RTT
+    /// telnet (9090-9097).
+    ///
+    /// On a box behind an authenticating gateway the ports are not
+    /// published, so this asks the gateway for a tunnel: an HTTP `CONNECT`
+    /// on the debug-service port, authorized with this client's own
+    /// credential (the same pinned or refreshed token every other call
+    /// carries, with the same single refresh-and-retry on a 401). The
+    /// returned stream is then a plain byte pipe to that port, with
+    /// `TCP_NODELAY` set and no timeouts.
+    ///
+    /// On a plain Lager box, whose own debug service answers the `CONNECT`
+    /// with 501, it connects to the published port directly. Callers never
+    /// need to know which kind of box they have.
+    ///
+    /// Start the debug server first ([`DebugNet::connect`]); a tunnel to a
+    /// port nothing listens on fails with [`Error::Box`] (status 502). A
+    /// gateway MAY close the tunnel when your access to the box is revoked,
+    /// which the caller sees as the stream closing.
+    ///
+    /// ```no_run
+    /// # fn main() -> lager::Result<()> {
+    /// let lager_box = lager::LagerBox::connect("192.168.1.42")?;
+    /// lager_box.debug("debug1").connect()?;
+    /// let stream = lager_box.debug_tunnel(2331)?;
+    /// // hand `stream` to any GDB remote-protocol client
+    /// # drop(stream);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`DebugNet::connect`]: crate::nets::debug::DebugNet::connect
+    pub fn debug_tunnel(&self, port: u16) -> Result<std::net::TcpStream> {
+        use crate::tunnel::Refusal;
+
+        let token = self.current_token();
+        let refusal = match self.tunnel_once(port, token.as_deref())? {
+            Ok(stream) => return Ok(stream),
+            Err(refusal) => refusal,
+        };
+        let refusal = match refusal {
+            Refusal::Denied { status, auth_url } => {
+                self.auth.learn_auth_server(&auth_url);
+                let fresh = if status == 401 && !self.auth.has_static_token() {
+                    self.auth.resolve_token_blocking(&auth_url, token.as_deref())
+                } else {
+                    None
+                };
+                let Some(fresh) = fresh else {
+                    return Err(auth::denial_error(
+                        status,
+                        self.auth.box_host(),
+                        &auth_url,
+                        token.is_some(),
+                    ));
+                };
+                match self.tunnel_once(port, Some(&fresh))? {
+                    Ok(stream) => return Ok(stream),
+                    Err(refusal) => refusal,
+                }
+            }
+            other => other,
+        };
+        match refusal {
+            Refusal::Unsupported { .. } => self.debug_port_direct(port, &refusal),
+            other => Err(crate::tunnel::refusal_error(
+                &other,
+                self.auth.box_host(),
+                port,
+            )),
+        }
+    }
+
+    /// The bearer token this client attaches to the box, refreshed if it
+    /// was near expiry, or `None` for a plain box that needs none.
+    ///
+    /// An escape hatch for raw HTTP calls the typed API does not cover
+    /// yet: send it as `Authorization: Bearer <token>`. Prefer a typed
+    /// method where one exists, since it also handles the refresh-and-retry
+    /// after a 401. Tokens are short-lived, so call this again for each raw
+    /// request rather than keeping the value.
+    ///
+    /// When the box has not been contacted yet, this makes one request
+    /// (`GET /health`) to learn whether it is gated. A gated box with no
+    /// usable session fails with [`Error::AuthRequired`].
+    pub fn bearer_token(&self) -> Result<Option<String>> {
+        if let Some(token) = self.current_token() {
+            return Ok(Some(token));
+        }
+        if self.auth.auth_url().is_none() {
+            // A gated box denies this and the crate learns its auth server,
+            // retrying with a stored session; a plain box just answers.
+            self.health()?;
+            if let Some(token) = self.current_token() {
+                return Ok(Some(token));
+            }
+        }
+        match self.auth.auth_url() {
+            None => Ok(None),
+            Some(auth_url) => Err(Error::AuthRequired {
+                box_host: self.auth.box_host().to_string(),
+                message: format!("box {} requires sign-in", self.auth.box_host()),
+                auth_url,
+            }),
+        }
+    }
+
+    /// One `CONNECT` round trip. `Ok(Ok(stream))` is an open tunnel;
+    /// `Ok(Err(refusal))` is an answer other than 200.
+    fn tunnel_once(
+        &self,
+        port: u16,
+        token: Option<&str>,
+    ) -> Result<std::result::Result<std::net::TcpStream, crate::tunnel::Refusal>> {
+        use std::io::{Read, Write};
+
+        use crate::tunnel::{self as tun, Refusal};
+
+        let (host, service_port) = tun::host_port(&self.debug_base)?;
+        let context = format!("debug tunnel via {host}:{service_port}");
+        let mut stream = connect_tcp(&host, service_port, self.default_timeout)?;
+        let io = |e| tun::io_error(&context, e);
+        stream
+            .set_read_timeout(Some(self.default_timeout))
+            .map_err(io)?;
+        stream
+            .set_write_timeout(Some(self.default_timeout))
+            .map_err(io)?;
+        stream
+            .write_all(&tun::connect_request(port, self.auth.box_host(), token))
+            .map_err(io)?;
+
+        // One byte at a time, so not a single tunnel byte past the blank
+        // line is taken out of the socket: a GDB server may speak first.
+        let mut head = Vec::with_capacity(256);
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            if head.len() >= tun::MAX_HEAD_BYTES {
+                return Ok(Err(Refusal::Unsupported { status: None }));
+            }
+            match stream.read(&mut byte) {
+                // A peer that hangs up mid-head does not do CONNECT.
+                Ok(0) => return Ok(Err(Refusal::Unsupported { status: None })),
+                Ok(_) => head.push(byte[0]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(io(e)),
+            }
+        }
+        let Some(head) = tun::parse_head(&head) else {
+            return Ok(Err(Refusal::Unsupported { status: None }));
+        };
+        if head.status == 200 {
+            stream.set_read_timeout(None).map_err(io)?;
+            stream.set_write_timeout(None).map_err(io)?;
+            stream.set_nodelay(true).map_err(io)?;
+            return Ok(Ok(stream));
+        }
+        let mut body = vec![0u8; head.content_length.min(tun::MAX_BODY_BYTES)];
+        let got = stream.read(&mut body).unwrap_or(0);
+        let body = String::from_utf8_lossy(&body[..got]).trim().to_string();
+        Ok(Err(tun::classify(&head, body)))
+    }
+
+    /// No tunnel: connect to the published port, as on a plain box. A box
+    /// known to be gated whose port is not reachable gets the "gateway
+    /// predates tunnels" error instead of a bare connection failure.
+    fn debug_port_direct(
+        &self,
+        port: u16,
+        refusal: &crate::tunnel::Refusal,
+    ) -> Result<std::net::TcpStream> {
+        let host = self.auth.box_host();
+        match connect_tcp(host, port, self.default_timeout) {
+            Ok(stream) => {
+                let _ = stream.set_nodelay(true);
+                Ok(stream)
+            }
+            Err(_) if self.auth.auth_url().is_some() => {
+                Err(crate::tunnel::refusal_error(refusal, host, port))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     // -- transport ---------------------------------------------------------
 
     /// Send one request against the port-9000 server.
@@ -717,4 +904,25 @@ impl Drop for BoxLockGuard<'_> {
             let _ = self.client.unlock(&self.user);
         }
     }
+}
+
+/// TCP connect with a timeout, trying every address the host resolves to.
+fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<std::net::TcpStream> {
+    use std::net::ToSocketAddrs;
+
+    let context = format!("{host}:{port}");
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| Error::Connection(format!("{context}: {e}")))?;
+    let mut last = None;
+    for addr in addrs {
+        match std::net::TcpStream::connect_timeout(&addr, timeout) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(match last {
+        Some(e) => crate::tunnel::io_error(&context, e),
+        None => Error::Connection(format!("{context}: no address")),
+    })
 }

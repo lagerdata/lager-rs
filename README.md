@@ -184,6 +184,38 @@ Plain (ungated) boxes are unaffected: no header is sent and none of this
 code runs. When a gateway asks for auth and no usable credential exists,
 calls fail with `Error::AuthRequired` naming the auth server to log into.
 
+### Raw debug ports: `debug_tunnel`
+
+A gated box does not publish its raw-TCP debug ports (GDB 2331-2342,
+OpenOCD 4444-4447 and 6666-6669, RTT 9090-9097), because a gateway can only
+check a token on HTTP. `debug_tunnel` gets a stream to one anyway: it asks
+the gateway for an HTTP `CONNECT` tunnel on the debug-service port, with the
+same token (pinned or refreshed) every other call uses. On a plain box it
+connects to the published port directly, so the same code runs on both.
+
+```rust,no_run
+# fn main() -> lager::Result<()> {
+# let lager_box = lager::LagerBox::connect("192.168.1.42")?;
+lager_box.debug("debug1").connect()?;          // start the GDB server first
+let stream = lager_box.debug_tunnel(2332)?;    // a std::net::TcpStream
+// hand `stream` to any GDB remote-protocol client
+# drop(stream);
+# Ok(()) }
+```
+
+The stream has `TCP_NODELAY` set and no timeouts. A gateway may close the
+tunnel if your access to the box is revoked; the caller sees the stream
+close. `AsyncLagerBox::debug_tunnel` returns a `tokio::net::TcpStream`.
+`examples/debug_tunnel.rs` sends `qSupported` and a memory read over one.
+
+### Raw HTTP: `bearer_token`
+
+For an HTTP endpoint the typed API does not cover yet,
+`lager_box.bearer_token()?` returns the token this client would attach
+(refreshed if near expiry), or `None` for a plain box. Send it as
+`Authorization: Bearer <token>`, and ask for it again per request: tokens
+are short-lived. Prefer a typed method where one exists.
+
 ## Errors
 
 Everything returns `lager::Result<T>` with a single `Error` enum:
