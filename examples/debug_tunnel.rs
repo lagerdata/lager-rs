@@ -28,18 +28,9 @@ fn main() -> lager::Result<()> {
         .unwrap_or(2331) as u16;
     println!("GDB server for {net} on port {port}");
 
-    // A server the box has only just started can take a moment to listen;
-    // until it does, a tunnel to it is refused with 502.
-    let mut attempts = 0;
-    let mut stream = loop {
-        match lager_box.debug_tunnel(port) {
-            Err(lager::Error::Box { status: 502, .. }) if attempts < 10 => {
-                attempts += 1;
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-            other => break other?,
-        }
-    };
+    // debug_tunnel waits out the moment a just-started server takes to
+    // open its port.
+    let mut stream = lager_box.debug_tunnel(port)?;
     let result = session(&mut stream);
     drop(stream);
     debug.disconnect(false)?;

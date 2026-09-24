@@ -168,8 +168,10 @@ impl LagerBox {
     /// with 501, it connects to the published port directly. Callers never
     /// need to know which kind of box they have.
     ///
-    /// Start the debug server first ([`DebugNet::connect`]); a tunnel to a
-    /// port nothing listens on fails with [`Error::Box`] (status 502). A
+    /// Start the debug server first ([`DebugNet::connect`]). A server that
+    /// was just started can take a moment to open its port, so a 502
+    /// (nothing listening) is retried every 250 ms for up to 5 s before it
+    /// fails with [`Error::Box`] (status 502). No other refusal is retried. A
     /// gateway MAY close the tunnel when your access to the box is revoked,
     /// which the caller sees as the stream closing.
     ///
@@ -186,43 +188,65 @@ impl LagerBox {
     ///
     /// [`DebugNet::connect`]: crate::nets::debug::DebugNet::connect
     pub fn debug_tunnel(&self, port: u16) -> Result<std::net::TcpStream> {
-        use crate::tunnel::Refusal;
+        use crate::tunnel::{self as tun, Refusal};
 
-        let token = self.current_token();
-        let refusal = match self.tunnel_once(port, token.as_deref())? {
-            Ok(stream) => return Ok(stream),
-            Err(refusal) => refusal,
-        };
-        let refusal = match refusal {
-            Refusal::Denied { status, auth_url } => {
-                self.auth.learn_auth_server(&auth_url);
-                let fresh = if status == 401 && !self.auth.has_static_token() {
-                    self.auth.resolve_token_blocking(&auth_url, token.as_deref())
-                } else {
-                    None
-                };
-                let Some(fresh) = fresh else {
-                    return Err(auth::denial_error(
-                        status,
-                        self.auth.box_host(),
-                        &auth_url,
-                        token.is_some(),
-                    ));
-                };
-                match self.tunnel_once(port, Some(&fresh))? {
-                    Ok(stream) => return Ok(stream),
-                    Err(refusal) => refusal,
+        // A debug server the box has only just started can take a moment
+        // to open its port, and until it does the gateway answers 502. That
+        // is the one refusal worth waiting out; every other one is final.
+        let deadline = std::time::Instant::now() + tun::NOTHING_LISTENING_WAIT;
+        let refusal = loop {
+            match self.tunnel_authorized(port)? {
+                Ok(stream) => return Ok(stream),
+                Err(Refusal::NothingListening { .. })
+                    if std::time::Instant::now() + tun::NOTHING_LISTENING_RETRY <= deadline =>
+                {
+                    std::thread::sleep(tun::NOTHING_LISTENING_RETRY);
                 }
+                Err(refusal) => break refusal,
             }
-            other => other,
         };
         match refusal {
             Refusal::Unsupported { .. } => self.debug_port_direct(port, &refusal),
-            other => Err(crate::tunnel::refusal_error(
-                &other,
+            other => Err(tun::refusal_error(&other, self.auth.box_host(), port)),
+        }
+    }
+
+    /// One `CONNECT`, with the single refresh-and-retry after a 401 that
+    /// every other call gets. A denial that stands becomes the error;
+    /// any other refusal is handed back for the caller to act on.
+    fn tunnel_authorized(
+        &self,
+        port: u16,
+    ) -> Result<std::result::Result<std::net::TcpStream, crate::tunnel::Refusal>> {
+        use crate::tunnel::Refusal;
+
+        let token = self.current_token();
+        let (status, auth_url) = match self.tunnel_once(port, token.as_deref())? {
+            Err(Refusal::Denied { status, auth_url }) => (status, auth_url),
+            other => return Ok(other),
+        };
+        self.auth.learn_auth_server(&auth_url);
+        let fresh = if status == 401 && !self.auth.has_static_token() {
+            self.auth.resolve_token_blocking(&auth_url, token.as_deref())
+        } else {
+            None
+        };
+        let Some(fresh) = fresh else {
+            return Err(auth::denial_error(
+                status,
                 self.auth.box_host(),
-                port,
+                &auth_url,
+                token.is_some(),
+            ));
+        };
+        match self.tunnel_once(port, Some(&fresh))? {
+            Err(Refusal::Denied { status, auth_url }) => Err(auth::denial_error(
+                status,
+                self.auth.box_host(),
+                &auth_url,
+                true,
             )),
+            other => Ok(other),
         }
     }
 
@@ -316,9 +340,13 @@ impl LagerBox {
         Ok(Err(tun::classify(&head, body)))
     }
 
-    /// No tunnel: connect to the published port, as on a plain box. A box
-    /// known to be gated whose port is not reachable gets the "gateway
-    /// predates tunnels" error instead of a bare connection failure.
+    /// No tunnel: connect to the published port, as on a plain box. When
+    /// that fails and the `CONNECT` carried a token -- the box is known to
+    /// be gated, or a token is pinned -- the answer is the "gateway predates
+    /// tunnels" error rather than a bare connection failure. A pinned token
+    /// never teaches the client the box's auth server (no denial happens),
+    /// so without this a pinned caller behind an old gateway saw only a
+    /// connect timeout.
     fn debug_port_direct(
         &self,
         port: u16,
@@ -330,7 +358,7 @@ impl LagerBox {
                 let _ = stream.set_nodelay(true);
                 Ok(stream)
             }
-            Err(_) if self.auth.auth_url().is_some() => {
+            Err(_) if self.auth.has_static_token() || self.auth.auth_url().is_some() => {
                 Err(crate::tunnel::refusal_error(refusal, host, port))
             }
             Err(e) => Err(e),

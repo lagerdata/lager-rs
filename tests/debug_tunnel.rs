@@ -15,9 +15,11 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 
 use httpmock::prelude::*;
 use lager::{Error, LagerBox};
@@ -481,20 +483,93 @@ fn a_403_without_the_header_is_a_port_outside_the_debug_ranges() {
     let text = err.to_string();
     assert!(text.contains("does not tunnel port 22"), "{text}");
     assert!(text.contains("port 22 is not tunnelable"), "{text}");
+    // Only a 502 is retried.
+    assert_eq!(gw.seen().len(), 1);
+}
+
+/// A gateway that answers 502 `failures` times, then opens the tunnel.
+fn starting_server(failures: usize) -> Gateway {
+    let calls = AtomicUsize::new(0);
+    Gateway::start(move |_| {
+        if calls.fetch_add(1, Ordering::SeqCst) < failures {
+            reply(502, "Bad Gateway", &[("Content-Type", "text/plain")], "")
+        } else {
+            established()
+        }
+    })
 }
 
 #[test]
-fn a_502_means_nothing_is_listening() {
+fn a_502_while_the_server_starts_is_waited_out() {
+    // The harness's sequence: start the server, dial its port at once.
+    let _guard = env_lock();
+    let _env = Env::with(&json!({}));
+    let gw = starting_server(2);
+    let started = Instant::now();
+    let mut stream = client(&gw).debug_tunnel(2332).unwrap();
+    stream.write_all(b"ping").unwrap();
+    assert_eq!(read_exactly(&mut stream, 4), b"ping");
+    assert_eq!(gw.seen().len(), 3);
+    // Two retries, about 250 ms apart.
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(450), "{waited:?}");
+    assert!(waited < Duration::from_secs(3), "{waited:?}");
+}
+
+#[test]
+fn a_502_that_persists_fails_after_about_five_seconds() {
     let _guard = env_lock();
     let _env = Env::with(&json!({}));
     let gw = Gateway::start(|_| reply(502, "Bad Gateway", &[("Content-Type", "text/plain")], ""));
+    let started = Instant::now();
     let err = client(&gw).debug_tunnel(2331).unwrap_err();
+    let waited = started.elapsed();
     assert!(matches!(err, Error::Box { status: 502, .. }), "{err}");
     assert!(
         err.to_string()
             .contains("nothing is listening on port 2331"),
         "{err}"
     );
+    assert!(waited >= Duration::from_millis(4500), "{waited:?}");
+    assert!(waited < Duration::from_secs(8), "{waited:?}");
+    // Every ~250 ms: well over a handful of attempts, far from a hot loop.
+    let attempts = gw.seen().len();
+    assert!((10..=25).contains(&attempts), "{attempts} attempts");
+}
+
+#[test]
+fn a_denial_is_not_retried() {
+    let _guard = env_lock();
+    let _env = Env::with(&gated_store(&fake_jwt("t", 3600)));
+    let gw = Gateway::start(|_| denial(503));
+    let err = client(&gw).debug_tunnel(2331).unwrap_err();
+    assert!(matches!(err, Error::Box { status: 503, .. }), "{err}");
+    assert_eq!(gw.seen().len(), 1);
+}
+
+#[test]
+fn a_pinned_token_behind_an_old_gateway_says_the_gateway_needs_updating() {
+    // A pinned token never meets a denial, so the client never learns the
+    // box's auth server. The token on the CONNECT is still proof enough
+    // that a gateway is in front: a plain box's published port would have
+    // answered the direct connect.
+    let _guard = env_lock();
+    let _env = Env::with(&json!({}));
+    let _token = EnvVar::set("LAGER_GATEWAY_TOKEN", "ci-token");
+    let gw = Gateway::start(|_| reply(501, "Unsupported method", &[], ""));
+    let closed = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let err = client(&gw).debug_tunnel(closed).unwrap_err();
+    assert!(matches!(err, Error::Box { status: 501, .. }), "{err}");
+    assert!(
+        err.to_string()
+            .contains("does not support debug tunnels yet"),
+        "{err}"
+    );
+    assert_eq!(gw.seen().len(), 1);
 }
 
 #[test]
@@ -693,12 +768,35 @@ mod async_client {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn maps_a_502() {
+    async fn waits_out_a_502_while_the_server_starts() {
         let _guard = env_lock();
         let _env = Env::with(&json!({}));
-        let gw = Gateway::start(|_| reply(502, "Bad Gateway", &[], ""));
-        let err = async_client(&gw).debug_tunnel(2331).await.unwrap_err();
-        assert!(matches!(err, Error::Box { status: 502, .. }), "{err}");
+        let gw = starting_server(2);
+        let mut stream = async_client(&gw).debug_tunnel(2332).await.unwrap();
+        stream.write_all(b"ping").await.unwrap();
+        let mut echo = [0u8; 4];
+        stream.read_exact(&mut echo).await.unwrap();
+        assert_eq!(&echo, b"ping");
+        assert_eq!(gw.seen().len(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pinned_token_behind_an_old_gateway_says_so() {
+        let _guard = env_lock();
+        let _env = Env::with(&json!({}));
+        let _token = EnvVar::set("LAGER_GATEWAY_TOKEN", "ci-token");
+        let gw = Gateway::start(|_| reply(501, "Unsupported method", &[], ""));
+        let closed = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let err = async_client(&gw).debug_tunnel(closed).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("does not support debug tunnels yet"),
+            "{err}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

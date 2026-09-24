@@ -203,9 +203,11 @@ let stream = lager_box.debug_tunnel(2332)?;    // a std::net::TcpStream
 # Ok(()) }
 ```
 
-The stream has `TCP_NODELAY` set and no timeouts. A gateway may close the
-tunnel if your access to the box is revoked; the caller sees the stream
-close. `AsyncLagerBox::debug_tunnel` returns a `tokio::net::TcpStream`.
+The stream has `TCP_NODELAY` set and no timeouts. A server that was just
+started can take a moment to open its port, so a 502 (nothing listening) is
+retried for up to 5 s; you can dial straight after `connect()`. A gateway
+may close the tunnel if your access to the box is revoked; the caller sees
+the stream close. `AsyncLagerBox::debug_tunnel` returns a `tokio::net::TcpStream`.
 `examples/debug_tunnel.rs` sends `qSupported` and a memory read over one.
 
 ### Raw HTTP: `bearer_token`

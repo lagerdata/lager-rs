@@ -21,8 +21,10 @@ Planned as 0.6.0.
   authorized with the client's own token (pinned or refreshed, with the
   usual single retry after a 401). On a plain box it connects to the port
   directly. Needs a gateway with debug-tunnel support; an older one fails
-  with `Error::Box` saying it needs updating. A 502 means nothing is
-  listening on the port yet: start the server with `DebugNet::connect`.
+  with `Error::Box` saying it needs updating, also when the token is pinned.
+  A server that was just started can take a moment to open its port, so a
+  502 (nothing listening) is retried every 250 ms for up to 5 s before it
+  fails; start the server first with `DebugNet::connect`.
 
 - **`LagerBox::bearer_token()`** (and the async twin): the token the client
   attaches (refreshed if near expiry), or `None` for a plain box. An escape
