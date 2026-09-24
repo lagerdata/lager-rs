@@ -66,6 +66,12 @@
 //! is sent and no code path runs. When no usable credential exists, calls
 //! fail with [`Error::AuthRequired`] naming the auth server to log into.
 //!
+//! The raw-TCP debug ports (GDB, OpenOCD, RTT telnet) are not published on
+//! a gated box; [`LagerBox::debug_tunnel`] reaches them through the
+//! gateway, and connects directly on a plain box. For HTTP endpoints the
+//! typed API does not cover yet, [`LagerBox::bearer_token`] returns the
+//! token to attach.
+//!
 //! # Features
 //!
 //! - `blocking` *(default)*: the [`LagerBox`] client on `ureq` — no tokio
@@ -88,6 +94,8 @@
 mod auth;
 mod error;
 pub mod nets;
+#[cfg(any(feature = "blocking", feature = "async"))]
+mod tunnel;
 pub mod wire;
 
 #[cfg(feature = "async")]

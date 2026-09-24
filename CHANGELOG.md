@@ -2,6 +2,38 @@
 
 All notable changes to the `lager-net` crate are documented here.
 
+## [Unreleased]
+
+Planned as 0.6.0.
+
+### Added
+
+- **`LagerBox::debug_tunnel(port)`** (and `AsyncLagerBox::debug_tunnel`):
+  a TCP stream to one of the box's raw debug ports, such as a GDB server,
+  for a GDB remote-protocol client:
+
+  ```rust
+  let stream = lager_box.debug_tunnel(2332)?;
+  ```
+
+  On a box behind an authenticating gateway, whose debug ports are not
+  published, this opens an HTTP `CONNECT` tunnel through the gateway,
+  authorized with the client's own token (pinned or refreshed, with the
+  usual single retry after a 401). On a plain box it connects to the port
+  directly. Needs a gateway with debug-tunnel support; an older one fails
+  with `Error::Box` saying it needs updating. A 502 means nothing is
+  listening on the port yet: start the server with `DebugNet::connect`.
+
+- **`LagerBox::bearer_token()`** (and the async twin): the token the client
+  attaches (refreshed if near expiry), or `None` for a plain box. An escape
+  hatch for raw HTTP calls the typed API does not cover yet, so callers no
+  longer need their own copy of the gateway auth.
+
+### Changed
+
+- The `async` feature now enables tokio's `net` and `io-util` features,
+  for `AsyncLagerBox::debug_tunnel`.
+
 ## [0.5.0] - 2026-08-27
 
 Catch-up release against box software 0.43.0: everything the box gained
