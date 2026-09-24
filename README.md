@@ -22,7 +22,7 @@ box's debug service on port 8765.
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.5" }
+lager = { package = "lager-net", version = "0.6" }
 ```
 
 ```rust
@@ -136,7 +136,7 @@ Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.5", features = ["async"] }
+lager = { package = "lager-net", version = "0.6", features = ["async"] }
 ```
 
 ## Parallel tests and instrument safety

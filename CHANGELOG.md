@@ -2,9 +2,7 @@
 
 All notable changes to the `lager-net` crate are documented here.
 
-## [Unreleased]
-
-Planned as 0.6.0.
+## [0.6.0] - 2026-09-24
 
 ### Added
 
