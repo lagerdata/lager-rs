@@ -80,7 +80,7 @@ Box-level capabilities (the box's own hardware, no net name):
 | Handle | Constructor | Highlights |
 | --- | --- | --- |
 | `Ble` | `lager.ble()` | `scan`/`scan_named`, `info`/`connect` (GATT enumeration), `disconnect` |
-| `BleSession` | `lager.ble_session(address, opts)?` *(feature `ble-session`)* | held-open GATT connection: `subscribe`, `write` (optionally `chunked()` to `mtu - 3`), `read`, notifications via `recv`/`try_recv`, `mtu()` |
+| `BleSession` | `lager.ble_session(address, opts)?` *(feature `ble-session`)* | held-open GATT connection: `subscribe`, `write` (optionally `chunked()` to `mtu - 3`, at most 512), `read`, notifications via `recv`/`try_recv`, `mtu()` |
 | `Wifi` | `lager.wifi()` | `status`, `scan`, `connect(ssid, password)`, `delete` |
 | `Blufi` | `lager.blufi()` | `scan`, `connect`, `provision(device, ssid, password)`, `wifi_scan`, `status`, `version` |
 | `Dfu` | `lager.dfu()` | box-side `dfu-util`: `list`, `download(firmware, opts)`, `detach` |

@@ -26,10 +26,10 @@
 //!   [`BleSession::mtu_is_measured`] is `false` when the box could not read
 //!   it and assumed the LE default of 23.
 //! - **Long writes.** A with-response write longer than
-//!   [`BleSession::max_write_len`] (`mtu - 3`) makes BlueZ use the ATT long
+//!   [`BleSession::max_write_len`] (`mtu - 3`, at most 512) makes BlueZ use the ATT long
 //!   write procedure (Prepare Write + Execute Write), which some simple
 //!   peripherals reject. [`WriteOptions::chunked`] splits the payload into
-//!   `mtu - 3`-byte ATT writes instead, sent in order with nothing else from
+//!   `max_write_len()`-byte ATT writes instead, sent in order with nothing else from
 //!   the session in between.
 //! - **Idle timeout.** The box closes a session after
 //!   [`BleSessionOptions::idle_timeout`] with no client *operation*.
@@ -80,6 +80,10 @@ use crate::wire::BleService;
 /// box allows connect plus service discovery `connect_timeout + 20` s, and
 /// may first wait for the adapter lock.
 const OPEN_OVERHEAD: Duration = Duration::from_secs(25);
+
+/// No attribute value is longer than this (ATT), so no single write can carry
+/// more; the box refuses a longer unchunked write.
+const ATT_MAX_VALUE: usize = 512;
 
 /// How long [`BleSession::close`] waits for the box to confirm the close.
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
@@ -153,7 +157,8 @@ impl WriteOptions {
         }
     }
 
-    /// Write with response, chunked to `mtu - 3` bytes per ATT write.
+    /// Write with response, chunked to [`BleSession::max_write_len`] bytes
+    /// per ATT write.
     pub fn chunked() -> Self {
         WriteOptions {
             response: true,
@@ -459,11 +464,13 @@ impl BleSession {
         self.info.mtu
     }
 
-    /// Largest payload one ATT write carries: `mtu - 3`. Longer
-    /// with-response writes become BlueZ long writes unless sent with
-    /// [`WriteOptions::chunked`].
+    /// Largest payload one ATT write carries: `mtu - 3`, and never more
+    /// than 512 (the ATT limit on an attribute value). Longer with-response
+    /// writes become BlueZ long writes unless sent with
+    /// [`WriteOptions::chunked`]; the box refuses any unchunked write over
+    /// 512 bytes with [`BleErrorKind::InvalidArgument`].
     pub fn max_write_len(&self) -> usize {
-        usize::from(self.info.mtu.saturating_sub(3))
+        usize::from(self.info.mtu.saturating_sub(3)).min(ATT_MAX_VALUE)
     }
 
     /// Whether [`BleSession::mtu`] was read from BlueZ (`true`) or assumed
@@ -799,6 +806,16 @@ fn channel_gone() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn max_write_len_is_capped_at_the_att_limit() {
+        let (mut s, _tx) = detached();
+        assert_eq!(s.max_write_len(), 244); // mtu 247
+        s.info.mtu = 517;
+        assert_eq!(s.max_write_len(), 512);
+        s.info.mtu = 0;
+        assert_eq!(s.max_write_len(), 0);
+    }
 
     #[test]
     fn chunked_writes_wait_in_proportion_to_their_chunks() {
