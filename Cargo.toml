@@ -27,6 +27,10 @@ uart = ["blocking", "dep:rust_socketio"]
 # Interactive (bi-directional) RTT over the box's Socket.IO /rtt namespace.
 # Requires box software >= 0.35.0.
 rtt = ["blocking", "dep:rust_socketio"]
+# BLE GATT sessions (subscribe/write/read/notifications on one held-open
+# connection) over the box's Socket.IO /ble namespace. Requires a box that
+# advertises capabilities.bleSession in GET /status.
+ble-session = ["blocking", "dep:rust_socketio"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

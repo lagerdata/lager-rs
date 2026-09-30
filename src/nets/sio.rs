@@ -1,7 +1,7 @@
-//! Helpers shared by the Socket.IO streaming sessions ([`super::uart`] and
-//! [`super::rtt`]). Both namespaces speak the same dialect — data rides as
-//! lowercase hex strings under a `data` key — so the codec lives here once
-//! and the two sessions cannot drift.
+//! Helpers shared by the Socket.IO sessions (`uart`, `rtt` and
+//! `ble_session`). All three namespaces speak the same dialect — data rides
+//! as lowercase hex strings under a `data` key — so the codec lives here
+//! once and the sessions cannot drift.
 
 use rust_socketio::Payload;
 use serde_json::Value;

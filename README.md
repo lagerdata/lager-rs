@@ -80,6 +80,7 @@ Box-level capabilities (the box's own hardware, no net name):
 | Handle | Constructor | Highlights |
 | --- | --- | --- |
 | `Ble` | `lager.ble()` | `scan`/`scan_named`, `info`/`connect` (GATT enumeration), `disconnect` |
+| `BleSession` | `lager.ble_session(address, opts)?` *(feature `ble-session`)* | held-open GATT connection: `subscribe`, `write` (optionally `chunked()` to `mtu - 3`), `read`, notifications via `recv`/`try_recv`, `mtu()` |
 | `Wifi` | `lager.wifi()` | `status`, `scan`, `connect(ssid, password)`, `delete` |
 | `Blufi` | `lager.blufi()` | `scan`, `connect`, `provision(device, ssid, password)`, `wifi_scan`, `status`, `version` |
 | `Dfu` | `lager.dfu()` | box-side `dfu-util`: `list`, `download(firmware, opts)`, `detach` |
@@ -120,6 +121,7 @@ newer surfaces need a newer box image and fail with
 | `nets_state()` | >= 0.34.0 |
 | `set_safety_limits()` / `clear_safety_limits()` / `safety_limits()` | >= 0.35.0 (`status().capabilities.safety_limits`) |
 | `DebugNet::rtt_interactive()` *(feature `rtt`)* | >= 0.35.0 |
+| `ble_session()` *(feature `ble-session`)* | a box advertising `status().capabilities.ble_session` |
 | `UsbPort::cycle()` / `recover()` | >= 0.39.0 |
 | `ConnectOptions::halt` honored on the OpenOCD backend | >= 0.43.0 |
 
@@ -131,6 +133,7 @@ newer surfaces need a newer box image and fail with
 | `async` | no | `AsyncLagerBox` on [`reqwest`]/tokio; same methods, `.await`ed |
 | `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace |
 | `rtt` | no | bi-directional `RttSession` over the box's Socket.IO `/rtt` namespace (box >= 0.35.0) |
+| `ble-session` | no | `BleSession` GATT sessions over the box's Socket.IO `/ble` namespace |
 
 Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.
@@ -228,6 +231,7 @@ Everything returns `lager::Result<T>` with a single `Error` enum:
 - `UnsupportedByBox` — the box image predates this endpoint (HTTP 501, a missing route, or a pre-0.29.0 `state` rejection); the message names the box version required
 - `AuthRequired` — the box's gateway wants a bearer token and none is available: run `lager login <auth_url>` or set `LAGER_GATEWAY_TOKEN`
 - `NotSupportedByBox` — the net type is a documented stub (see below)
+- `Ble { kind, message }` — a BLE session operation failed or the session ended; `kind` is a `BleErrorKind` (`AdapterBusy`, `Disconnected`, `NotPermitted`, ...)
 
 ## Firmware, flashing, and RTT
 

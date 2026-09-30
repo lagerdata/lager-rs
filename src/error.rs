@@ -63,6 +63,131 @@ pub enum Error {
     /// A streaming session (UART) reported an error, e.g. the net is in use
     /// by another session or the device disappeared.
     Stream(String),
+    /// A BLE GATT session operation failed, or the session has ended
+    /// (feature `ble-session`). `kind` is the box's error code or close
+    /// reason; `message` is the box's explanation.
+    Ble {
+        /// What went wrong, from the box's error code or close reason.
+        kind: BleErrorKind,
+        /// Human-readable error message from the box.
+        message: String,
+    },
+}
+
+/// The kind of an [`Error::Ble`]: one variant per error code the box's BLE
+/// session reports, plus the reasons a session can end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BleErrorKind {
+    /// The address was not seen during the connect scan: the device is not
+    /// advertising, or is out of range. The session was not opened.
+    DeviceNotFound,
+    /// Connecting failed or timed out. The session was not opened.
+    ConnectFailed,
+    /// Another session, or a BLE/BluFi operation, holds the box's Bluetooth
+    /// adapter. The message names the holder.
+    AdapterBusy,
+    /// BlueZ is not running on the box host; the message says how to fix it.
+    BluezUnavailable,
+    /// A session is already open on this connection.
+    SessionActive,
+    /// No session is open (the box ended it, or it was closed).
+    NotOpen,
+    /// The UUID or handle is not in the device's GATT table.
+    UnknownCharacteristic,
+    /// The UUID appears more than once; the message lists the handles to
+    /// use instead.
+    AmbiguousCharacteristic,
+    /// The characteristic lacks the needed property, or the peripheral
+    /// refused the operation.
+    NotPermitted,
+    /// A bad address, timeout, hex payload or payload size.
+    InvalidArgument,
+    /// The peripheral disconnected. The session has ended.
+    Disconnected,
+    /// A box-side operation bound ran out. The session has ended.
+    Timeout,
+    /// The client broke the session protocol (a missing `seq`). The session
+    /// has ended.
+    ProtocolError,
+    /// The client did not drain notifications fast enough and the box's
+    /// buffer filled. The session has ended.
+    Overflow,
+    /// No client operation within the idle timeout. The session has ended.
+    IdleTimeout,
+    /// Another client force-released the session. The session has ended.
+    Released,
+    /// Any other BLE error (the box's `ble_error`), or a code this crate
+    /// does not know yet.
+    Other,
+}
+
+impl BleErrorKind {
+    /// Map a box error code (the `code` of a failed `ble_result`) to a kind.
+    /// Unknown codes map to [`BleErrorKind::Other`].
+    pub fn from_code(code: &str) -> Self {
+        match code {
+            "device_not_found" => BleErrorKind::DeviceNotFound,
+            "connect_failed" => BleErrorKind::ConnectFailed,
+            "adapter_busy" => BleErrorKind::AdapterBusy,
+            "bluez_unavailable" => BleErrorKind::BluezUnavailable,
+            "session_active" => BleErrorKind::SessionActive,
+            "not_open" => BleErrorKind::NotOpen,
+            "unknown_characteristic" => BleErrorKind::UnknownCharacteristic,
+            "ambiguous_characteristic" => BleErrorKind::AmbiguousCharacteristic,
+            "not_permitted" => BleErrorKind::NotPermitted,
+            "invalid_argument" => BleErrorKind::InvalidArgument,
+            "disconnected" => BleErrorKind::Disconnected,
+            "timeout" => BleErrorKind::Timeout,
+            "protocol_error" => BleErrorKind::ProtocolError,
+            "overflow" => BleErrorKind::Overflow,
+            "idle_timeout" => BleErrorKind::IdleTimeout,
+            "released" => BleErrorKind::Released,
+            _ => BleErrorKind::Other,
+        }
+    }
+
+    /// Map a session close reason (the `reason` of `ble_closed`) to the kind
+    /// later operations fail with. `client` (the session was closed from
+    /// this side) maps to [`BleErrorKind::NotOpen`]; `shutdown` (the box
+    /// server stopped) and unknown reasons map to [`BleErrorKind::Other`].
+    pub fn from_close_reason(reason: &str) -> Self {
+        match reason {
+            "client" => BleErrorKind::NotOpen,
+            "shutdown" => BleErrorKind::Other,
+            other => BleErrorKind::from_code(other),
+        }
+    }
+
+    /// The box's code for this kind (`"ble_error"` for
+    /// [`BleErrorKind::Other`]).
+    pub fn as_code(&self) -> &'static str {
+        match self {
+            BleErrorKind::DeviceNotFound => "device_not_found",
+            BleErrorKind::ConnectFailed => "connect_failed",
+            BleErrorKind::AdapterBusy => "adapter_busy",
+            BleErrorKind::BluezUnavailable => "bluez_unavailable",
+            BleErrorKind::SessionActive => "session_active",
+            BleErrorKind::NotOpen => "not_open",
+            BleErrorKind::UnknownCharacteristic => "unknown_characteristic",
+            BleErrorKind::AmbiguousCharacteristic => "ambiguous_characteristic",
+            BleErrorKind::NotPermitted => "not_permitted",
+            BleErrorKind::InvalidArgument => "invalid_argument",
+            BleErrorKind::Disconnected => "disconnected",
+            BleErrorKind::Timeout => "timeout",
+            BleErrorKind::ProtocolError => "protocol_error",
+            BleErrorKind::Overflow => "overflow",
+            BleErrorKind::IdleTimeout => "idle_timeout",
+            BleErrorKind::Released => "released",
+            BleErrorKind::Other => "ble_error",
+        }
+    }
+}
+
+impl fmt::Display for BleErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_code())
+    }
 }
 
 impl fmt::Display for Error {
@@ -93,6 +218,7 @@ impl fmt::Display for Error {
             ),
             Error::Config(msg) => write!(f, "configuration error: {msg}"),
             Error::Stream(msg) => write!(f, "streaming session error: {msg}"),
+            Error::Ble { kind, message } => write!(f, "BLE session error ({kind}): {message}"),
         }
     }
 }

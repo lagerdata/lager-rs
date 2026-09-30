@@ -689,6 +689,11 @@ pub struct BoxCapabilities {
     /// here even if its version says otherwise.
     #[serde(default, rename = "safetyLimits")]
     pub safety_limits: bool,
+    /// Whether the box serves BLE GATT sessions on the Socket.IO `/ble`
+    /// namespace ([`crate::LagerBox::ble_session`], feature `ble-session`).
+    /// Absent (false) on boxes that predate them.
+    #[serde(default, rename = "bleSession")]
+    pub ble_session: bool,
 }
 
 /// Response of `GET /status`.
@@ -1052,6 +1057,11 @@ pub struct BleCharacteristic {
     /// Supported operations, e.g. `["read", "notify"]`.
     #[serde(default)]
     pub properties: Vec<String>,
+    /// ATT handle, when the box reports it (BLE sessions do; the one-shot
+    /// `info`/`connect` results from older boxes may not). Use it with the
+    /// `*_handle` session operations when a UUID appears more than once.
+    #[serde(default)]
+    pub handle: Option<u16>,
 }
 
 /// One GATT service enumerated from a connected BLE device.

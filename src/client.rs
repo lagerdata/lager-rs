@@ -902,6 +902,34 @@ impl LagerBox {
     pub fn uart(&self, name: impl Into<String>) -> Result<crate::nets::uart::Uart> {
         crate::nets::uart::Uart::open(&self.base, name.into(), self.current_token())
     }
+
+    /// Open a BLE GATT session to the device at `address`
+    /// (`XX:XX:XX:XX:XX:XX`) through the box's Bluetooth adapter.
+    ///
+    /// Checks [`LagerBox::status`] first and fails with
+    /// [`Error::UnsupportedByBox`] when the box does not advertise
+    /// `capabilities.bleSession`. Then connects a Socket.IO session to the
+    /// box's `/ble` namespace and waits up to
+    /// [`BleSessionOptions::connect_timeout`](crate::BleSessionOptions) plus
+    /// 25 s for the box to connect and enumerate the GATT table. Only one
+    /// session per box: another open session fails this with
+    /// [`crate::BleErrorKind::AdapterBusy`]. See
+    /// [`crate::nets::ble_session`] for what else to know.
+    #[cfg(feature = "ble-session")]
+    pub fn ble_session(
+        &self,
+        address: &str,
+        opts: crate::nets::ble_session::BleSessionOptions,
+    ) -> Result<crate::nets::ble_session::BleSession> {
+        if !self.status()?.capabilities.ble_session {
+            return Err(Error::UnsupportedByBox {
+                message: "this box does not serve BLE sessions (no capabilities.bleSession \
+                          in GET /status); run `lager update` on it"
+                    .to_string(),
+            });
+        }
+        crate::nets::ble_session::BleSession::open(&self.base, address, opts, self.current_token())
+    }
 }
 
 /// RAII box-lock claim from [`LagerBox::lock_guard`]: releases the lock on

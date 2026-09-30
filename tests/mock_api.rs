@@ -1239,6 +1239,8 @@ fn health_and_status() {
     assert!(status.capabilities.custom_devices);
     assert!(status.capabilities.binaries);
     assert!(status.capabilities.safety_limits);
+    // Absent on boxes that predate BLE sessions.
+    assert!(!status.capabilities.ble_session);
     assert!(status
         .capabilities
         .net_command_roles
@@ -2281,6 +2283,41 @@ fn nets_state_missing_route_maps_to_unsupported() {
 // ---------------------------------------------------------------------------
 // Async client parity (same wire layer, so a spot check suffices)
 // ---------------------------------------------------------------------------
+
+#[cfg(feature = "ble-session")]
+#[test]
+fn ble_session_refused_when_box_lacks_the_capability() {
+    let server = MockServer::start();
+    let status = server.mock(|when, then| {
+        when.method(GET).path("/status");
+        then.status(200).json_body(json!({
+            "healthy": true, "version": "0.51.1", "nets": [],
+            "capabilities": { "netCommand": true, "bleCommand": true }
+        }));
+    });
+    let lager = client(&server);
+    let err = lager
+        .ble_session("AA:BB:CC:DD:EE:01", lager::BleSessionOptions::default())
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsupportedByBox { ref message } if message.contains("bleSession")),
+        "{err:?}"
+    );
+    status.assert();
+}
+
+#[test]
+fn status_reports_ble_session_capability() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/status");
+        then.status(200).json_body(json!({
+            "healthy": true, "version": "0.52.0", "nets": [],
+            "capabilities": { "bleCommand": true, "bleSession": true }
+        }));
+    });
+    assert!(client(&server).status().unwrap().capabilities.ble_session);
+}
 
 #[cfg(feature = "async")]
 mod async_parity {

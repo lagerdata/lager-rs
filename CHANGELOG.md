@@ -2,6 +2,42 @@
 
 All notable changes to the `lager-net` crate are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **`LagerBox::ble_session(address, opts)`** (feature `ble-session`): a BLE
+  GATT session over the box's Socket.IO `/ble` namespace that holds one
+  connection open across many operations, so a cargo test can talk to a
+  peripheral the way a phone would:
+
+  ```rust
+  let mut s = lager.ble_session("AA:BB:CC:DD:EE:01", BleSessionOptions::default())?;
+  s.subscribe(NOTIFY_UUID)?;
+  s.write(WRITE_UUID, &request, WriteOptions::chunked())?;
+  let reply = s.recv(Duration::from_secs(2))?;
+  s.close()?;
+  ```
+
+  `subscribe`/`unsubscribe`/`write`/`read` (plus `*_handle` variants for a
+  UUID that appears in more than one service), `info`, `ping`, blocking
+  `recv(timeout)` and non-blocking `try_recv` for notifications, and the
+  negotiated `mtu()` / `max_write_len()` / `mtu_is_measured()`.
+  Notifications are buffered and never dropped; after the link drops,
+  `recv`/`try_recv` return every buffered notification before the
+  `Error::Ble { kind: Disconnected, .. }`. One session per box: the box
+  refuses a second opener, and its BLE scans and BluFi operations, while a
+  session is open. Needs a box that advertises `capabilities.bleSession`;
+  older boxes fail with `Error::UnsupportedByBox` before any Socket.IO
+  traffic.
+
+- **`Error::Ble { kind: BleErrorKind, message }`**: BLE session failures,
+  with one `BleErrorKind` per box error code and session close reason.
+
+- **`BoxCapabilities::ble_session`** (`bleSession` in `GET /status`) and
+  **`BleCharacteristic::handle`** (the characteristic's ATT handle, when the
+  box reports it).
+
 ## [0.6.0] - 2026-09-24
 
 ### Added

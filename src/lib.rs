@@ -81,6 +81,10 @@
 //! - `uart`: streaming UART sessions over Socket.IO ([`nets::uart::Uart`]).
 //! - `rtt`: bi-directional RTT sessions over Socket.IO
 //!   ([`nets::rtt::RttSession`], box >= 0.35.0).
+//! - `ble-session`: BLE GATT sessions over Socket.IO
+//!   ([`nets::ble_session::BleSession`], from [`LagerBox::ble_session`]):
+//!   subscribe, write, read and receive notifications on one held-open
+//!   connection. Needs a box advertising `capabilities.bleSession`.
 //!
 //! # Not yet on the HTTP API
 //!
@@ -103,7 +107,7 @@ mod async_client;
 #[cfg(feature = "blocking")]
 mod client;
 
-pub use error::{Error, Result};
+pub use error::{BleErrorKind, Error, Result};
 
 /// Environment variable read by `from_env` constructors (`LAGER_BOX_HOST`).
 pub const BOX_HOST_ENV: &str = "LAGER_BOX_HOST";
@@ -165,6 +169,11 @@ pub use nets::uart::Uart;
 
 #[cfg(feature = "rtt")]
 pub use nets::rtt::RttSession;
+
+#[cfg(feature = "ble-session")]
+pub use nets::ble_session::{
+    BleNotification, BleSession, BleSessionInfo, BleSessionOptions, WriteOptions,
+};
 
 // Structured result types, re-exported from the wire layer.
 pub use wire::{

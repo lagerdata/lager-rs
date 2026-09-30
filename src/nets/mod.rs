@@ -9,6 +9,8 @@ pub mod adc;
 pub mod arm;
 pub mod battery;
 pub mod ble;
+#[cfg(feature = "ble-session")]
+pub mod ble_session;
 pub mod blufi;
 pub mod dac;
 pub mod debug;
@@ -21,7 +23,7 @@ pub mod router;
 pub mod scope;
 #[cfg(feature = "rtt")]
 pub mod rtt;
-#[cfg(any(feature = "uart", feature = "rtt"))]
+#[cfg(any(feature = "uart", feature = "rtt", feature = "ble-session"))]
 pub(crate) mod sio;
 pub mod solar;
 pub mod spi;

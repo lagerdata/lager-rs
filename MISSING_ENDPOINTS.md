@@ -3,7 +3,7 @@
 This crate targets the Lager box HTTP API on port 9000 for instrument nets
 (`/net/command`, `/supply/command`, `/battery/command`, `/usb/command`,
 `/ble/command`, `/wifi/command`, `/blufi/command`, `/nets/list`, plus the
-`/uart` Socket.IO namespace), and the box **debug service on port 8765** for
+`/uart`, `/rtt` and `/ble` Socket.IO namespaces), and the box **debug service on port 8765** for
 debug-probe nets.
 
 Only the net types below remain unreachable over an HTTP/JSON API, so the
