@@ -136,6 +136,10 @@ pub struct WriteOptions {
     /// [`BleSession::max_write_len`] bytes, sent in order. Without it a
     /// longer with-response write becomes a BlueZ long write.
     pub chunk: bool,
+    /// Cap each chunk at this many bytes (1–512) when it is below
+    /// [`BleSession::max_write_len`], for a peripheral that accepts less than
+    /// `mtu - 3` bytes per write. Setting it turns chunking on.
+    pub chunk_size: Option<u16>,
 }
 
 impl Default for WriteOptions {
@@ -144,6 +148,7 @@ impl Default for WriteOptions {
         WriteOptions {
             response: true,
             chunk: false,
+            chunk_size: None,
         }
     }
 }
@@ -153,7 +158,7 @@ impl WriteOptions {
     pub fn without_response() -> Self {
         WriteOptions {
             response: false,
-            chunk: false,
+            ..WriteOptions::default()
         }
     }
 
@@ -161,8 +166,18 @@ impl WriteOptions {
     /// per ATT write.
     pub fn chunked() -> Self {
         WriteOptions {
-            response: true,
             chunk: true,
+            ..WriteOptions::default()
+        }
+    }
+
+    /// Write with response, chunked to at most `size` bytes per ATT write
+    /// (and never more than [`BleSession::max_write_len`]).
+    pub fn chunked_to(size: u16) -> Self {
+        WriteOptions {
+            chunk: true,
+            chunk_size: Some(size),
+            ..WriteOptions::default()
         }
     }
 }
@@ -255,7 +270,10 @@ fn write_payload(target: Target<'_>, data: &[u8], opts: WriteOptions) -> Value {
     let mut body = target_payload(target);
     body["data"] = json!(hex_encode(data));
     body["response"] = json!(opts.response);
-    body["chunk"] = json!(opts.chunk);
+    body["chunk"] = json!(opts.chunk || opts.chunk_size.is_some());
+    if let Some(size) = opts.chunk_size {
+        body["chunk_size"] = json!(size);
+    }
     body
 }
 
@@ -699,10 +717,14 @@ impl BleSession {
     /// 5 s, whichever is longer. A stalled chunk still fails fast: the box
     /// reports it as `timeout` after 10 s.
     fn write_timeout(&self, len: usize, opts: WriteOptions) -> Duration {
-        if !opts.chunk {
+        if !opts.chunk && opts.chunk_size.is_none() {
             return self.op_timeout;
         }
-        let chunks = len.div_ceil(self.max_write_len().max(1)).max(1);
+        let size = match opts.chunk_size {
+            Some(n) => self.max_write_len().min(usize::from(n)),
+            None => self.max_write_len(),
+        };
+        let chunks = len.div_ceil(size.max(1)).max(1);
         let chunked = BOX_CHUNK_BOUND * u32::try_from(chunks).unwrap_or(u32::MAX)
             + Duration::from_secs(5);
         self.op_timeout.max(chunked)
@@ -825,6 +847,8 @@ mod tests {
         assert_eq!(s.write_timeout(1, WriteOptions::chunked()), Duration::from_secs(15));
         // 600 bytes -> 3 chunks
         assert_eq!(s.write_timeout(600, WriteOptions::chunked()), Duration::from_secs(35));
+        // capped at 100 bytes -> 6 chunks
+        assert_eq!(s.write_timeout(600, WriteOptions::chunked_to(100)), Duration::from_secs(65));
     }
 
     const WRITE_UUID: &str = "12345678-1234-5678-1234-56789abcdef1";
@@ -923,8 +947,14 @@ mod tests {
             WriteOptions::chunked(),
             WriteOptions {
                 response: true,
-                chunk: true
+                chunk: true,
+                chunk_size: None,
             }
+        );
+        assert_eq!(
+            write_payload(Target::Uuid(WRITE_UUID), b"\x00", WriteOptions::chunked_to(100)),
+            json!({ "char": WRITE_UUID, "data": "00", "response": true, "chunk": true,
+                    "chunk_size": 100 })
         );
     }
 
