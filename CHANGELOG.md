@@ -34,6 +34,14 @@ All notable changes to the `lager-net` crate are documented here.
 - **`Error::Ble { kind: BleErrorKind, message }`**: BLE session failures,
   with one `BleErrorKind` per box error code and session close reason.
 
+- **`Ble::adapter()`**: whether the box has a powered Bluetooth adapter
+  (`BleAdapter { available, adapters, reason }`), answered even while a
+  session holds the adapter, so a test can skip on a box without a radio.
+
+- **`BleDevice::address_type`, `random_type` and `is_static_random()`**: scan
+  results say whether an address is public or random, and which kind of
+  random address.
+
 - **`BoxCapabilities::ble_session`** (`bleSession` in `GET /status`) and
   **`BleCharacteristic::handle`** (the characteristic's ATT handle, when the
   box reports it).

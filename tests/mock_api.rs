@@ -1692,6 +1692,46 @@ fn ble_scan() {
 }
 
 #[test]
+fn ble_scan_reports_address_types() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/ble/command");
+        then.status(200).json_body(json!({
+            "success": true, "action": "scan",
+            "value": {"devices": [
+                {"name": "peer", "address": "C0:E3:50:76:0F:7D", "address_type": "random",
+                 "random_type": "static", "rssi": -40, "uuids": []},
+                {"name": "phone", "address": "4C:30:CD:D9:41:93", "address_type": "random",
+                 "random_type": "resolvable", "rssi": -60, "uuids": []}
+            ]}
+        }));
+    });
+    let devices = client(&server).ble().scan(5.0).unwrap();
+    assert!(devices[0].is_static_random());
+    assert!(!devices[1].is_static_random());
+    assert_eq!(devices[1].random_type.as_deref(), Some("resolvable"));
+}
+
+#[test]
+fn ble_adapter() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/ble/command").json_body(json!({
+            "action": "adapter", "params": {}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "adapter",
+            "value": {"available": false, "reason": "The box has no Bluetooth adapter",
+                      "adapters": []}
+        }));
+    });
+    let adapter = client(&server).ble().adapter().unwrap();
+    assert!(!adapter.available);
+    assert_eq!(adapter.reason.as_deref(), Some("The box has no Bluetooth adapter"));
+    m.assert();
+}
+
+#[test]
 fn ble_scan_named_sends_filter() {
     let server = MockServer::start();
     let m = server.mock(|when, then| {

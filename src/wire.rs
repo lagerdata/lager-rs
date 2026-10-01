@@ -1037,12 +1037,57 @@ pub struct BleDevice {
     /// BLE MAC address, `XX:XX:XX:XX:XX:XX`.
     #[serde(default)]
     pub address: String,
+    /// `"public"` or `"random"`, as BlueZ reports it. `None` from a BluFi
+    /// scan or a box that predates the field.
+    #[serde(default)]
+    pub address_type: Option<String>,
+    /// For a random address: `"static"`, `"resolvable"` or
+    /// `"non-resolvable"` (from the address's two most significant bits).
+    /// `None` for a public address.
+    #[serde(default)]
+    pub random_type: Option<String>,
     /// Signal strength (dBm).
     #[serde(default, deserialize_with = "lenient::opt_i64")]
     pub rssi: Option<i64>,
     /// Advertised service UUIDs.
     #[serde(default)]
     pub uuids: Vec<String>,
+}
+
+impl BleDevice {
+    /// Whether the device uses a static random address.
+    pub fn is_static_random(&self) -> bool {
+        self.address_type.as_deref() == Some("random")
+            && self.random_type.as_deref() == Some("static")
+    }
+}
+
+/// Whether the box can do BLE (`Ble::adapter`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BleAdapter {
+    /// `true` when BlueZ reports at least one powered adapter.
+    #[serde(default)]
+    pub available: bool,
+    /// Every adapter BlueZ knows about, powered or not.
+    #[serde(default)]
+    pub adapters: Vec<BleAdapterInfo>,
+    /// Why BLE is not available (no adapter, powered off, no BlueZ).
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// One Bluetooth adapter on the box.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BleAdapterInfo {
+    /// Interface name, e.g. `hci0`.
+    #[serde(default)]
+    pub name: String,
+    /// The adapter's own address.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// Whether the adapter is powered on.
+    #[serde(default)]
+    pub powered: bool,
 }
 
 /// One GATT characteristic inside a [`BleService`].

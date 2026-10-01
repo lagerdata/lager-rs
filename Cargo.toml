@@ -54,5 +54,9 @@ required-features = ["blocking"]
 name = "debug_tunnel"
 required-features = ["blocking"]
 
+[[example]]
+name = "ble_session"
+required-features = ["ble-session"]
+
 [package.metadata.docs.rs]
 all-features = true

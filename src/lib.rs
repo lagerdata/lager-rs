@@ -177,7 +177,8 @@ pub use nets::ble_session::{
 
 // Structured result types, re-exported from the wire layer.
 pub use wire::{
-    ArmPosition, BatteryState, BleCharacteristic, BleDevice, BleDeviceInfo, BleService,
+    ArmPosition, BatteryState, BleAdapter, BleAdapterInfo, BleCharacteristic, BleDevice,
+    BleDeviceInfo, BleService,
     BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxLock,
     BoxStatus, DfuDevice, DfuOutput, EloadState, EnergyReading, EnergyStats, Health, NetRecord,
     NetState, NetSummary, RouterSystemInfo, SafetyLimits, StatSummary, SupplyState,

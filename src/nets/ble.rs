@@ -5,7 +5,9 @@
 //! operations on it, so concurrent calls queue rather than fail.
 
 use super::box_handle;
-pub use crate::wire::{BleCharacteristic, BleDevice, BleDeviceInfo, BleService};
+pub use crate::wire::{
+    BleAdapter, BleAdapterInfo, BleCharacteristic, BleDevice, BleDeviceInfo, BleService,
+};
 
 pub(crate) mod ops {
     use std::time::Duration;
@@ -14,7 +16,8 @@ pub(crate) mod ops {
 
     use crate::error::Result;
     use crate::wire::{
-        box_command, unit, value_as, value_list_field, BleDevice, BleDeviceInfo, CommandResponse,
+        box_command, unit, value_as, value_list_field, BleAdapter, BleDevice, BleDeviceInfo,
+        CommandResponse,
         Op, Timeout,
     };
 
@@ -77,6 +80,13 @@ pub(crate) mod ops {
         }
     }
 
+    pub(crate) fn adapter() -> Op<BleAdapter> {
+        Op {
+            req: box_command(PATH, "adapter", json!({}), budget(5.0)),
+            parse: value_as::<BleAdapter>,
+        }
+    }
+
     pub(crate) fn disconnect(address: &str) -> Op<()> {
         Op {
             req: box_command(
@@ -107,5 +117,9 @@ box_handle! {
         fn connect(address: &str) -> BleDeviceInfo = ops::connect;
         /// Ensure a device is disconnected from the box.
         fn disconnect(address: &str) -> () = ops::disconnect;
+        /// Whether the box has a powered Bluetooth adapter. Answers even
+        /// while a session holds the adapter, so a test can check it first
+        /// and skip on a box without a radio.
+        fn adapter() -> BleAdapter = ops::adapter;
     }
 }
