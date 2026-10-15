@@ -2,7 +2,7 @@
 
 All notable changes to the `lager-net` crate are documented here.
 
-## [Unreleased]
+## [0.7.0] - 2026-10-15
 
 ### Changed
 
@@ -12,10 +12,11 @@ All notable changes to the `lager-net` crate are documented here.
   instead of `Error::Box`. Both streams are complete, and its `Display` quotes
   both. Before, the error carried only the box's summary, which quoted the last
   3 lines of one stream: `dfu-util` reports a raw download's device failure on
-  stdout and its DFU suffix warnings on stderr, so the warnings hid the cause. This works against every box that serves
-  `POST /usb/dfu`, since the box has always sent the full output.
+  stdout and its DFU suffix warnings on stderr, so the warnings hid the cause.
+  This works against every box that serves `POST /usb/dfu`, since the box has
+  always sent the full output.
 
-  **Behavior change, for the next minor release (0.7.0):** code that matched
+  **Behavior change:** code that matched
   `Error::Box { status: 502, .. }` for a DFU failure needs an
   `Error::DfuFailed` arm. Code that only formats the error just sees more text.
   A box without `dfu-util` installed (HTTP 500) and a box-side timeout
