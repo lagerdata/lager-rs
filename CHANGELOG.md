@@ -2,6 +2,25 @@
 
 All notable changes to the `lager-net` crate are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **A failed DFU run keeps `dfu-util`'s output.** When box-side `dfu-util` exits
+  non-zero, `Dfu::download`, `Dfu::detach` and `Dfu::list` (and the async twins)
+  now fail with the new `Error::DfuFailed { status, exit_code, stdout, stderr }`
+  instead of `Error::Box`. Both streams are complete, and its `Display` quotes
+  both. Before, the error carried only the box's summary, which quoted the last
+  3 lines of one stream: `dfu-util` reports a raw download's device failure on
+  stdout and its DFU suffix warnings on stderr, so the warnings hid the cause. This works against every box that serves
+  `POST /usb/dfu`, since the box has always sent the full output.
+
+  **Behavior change, for the next minor release (0.7.0):** code that matched
+  `Error::Box { status: 502, .. }` for a DFU failure needs an
+  `Error::DfuFailed` arm. Code that only formats the error just sees more text.
+  A box without `dfu-util` installed (HTTP 500) and a box-side timeout
+  (HTTP 504) are still `Error::Box`.
+
 ## [0.6.0] - 2026-09-24
 
 ### Added

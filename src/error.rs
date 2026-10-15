@@ -27,6 +27,21 @@ pub enum Error {
         /// Human-readable error message from the box.
         message: String,
     },
+    /// Box-side `dfu-util` ran and exited non-zero (HTTP 502 from
+    /// `POST /usb/dfu`). Carries both captured streams in full, and
+    /// `Display` quotes both: dfu-util reports a device failure on stdout
+    /// for a raw download and on stderr for DfuSe, and its DFU suffix
+    /// warnings on stderr.
+    DfuFailed {
+        /// HTTP status code of the response (502).
+        status: u16,
+        /// dfu-util's exit code.
+        exit_code: Option<i64>,
+        /// dfu-util's captured stdout.
+        stdout: String,
+        /// dfu-util's captured stderr.
+        stderr: String,
+    },
     /// HTTP 501: this box image does not serve the endpoint. The box needs a
     /// software update.
     UnsupportedByBox {
@@ -75,6 +90,29 @@ impl fmt::Display for Error {
             Error::Timeout(msg) => write!(f, "request to the Lager box timed out: {msg}"),
             Error::Box { status, message } => {
                 write!(f, "box error (HTTP {status}): {message}")
+            }
+            Error::DfuFailed {
+                status,
+                exit_code,
+                stdout,
+                stderr,
+            } => {
+                write!(f, "box error (HTTP {status}): dfu-util ")?;
+                match exit_code {
+                    Some(code) => write!(f, "exited with code {code}")?,
+                    None => write!(f, "failed")?,
+                }
+                let (stderr, stdout) = (stderr.trim(), stdout.trim());
+                if stderr.is_empty() && stdout.is_empty() {
+                    return write!(f, ": no output");
+                }
+                if !stderr.is_empty() {
+                    write!(f, "\nstderr:\n{stderr}")?;
+                }
+                if !stdout.is_empty() {
+                    write!(f, "\nstdout:\n{stdout}")?;
+                }
+                Ok(())
             }
             Error::UnsupportedByBox { message } => write!(
                 f,
