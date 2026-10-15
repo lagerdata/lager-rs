@@ -62,8 +62,8 @@ pub(crate) mod ops {
     use crate::error::Result;
     use crate::nets::debug::base64_encode;
     use crate::wire::{
-        box_command, dfu_unsupported, map_route_missing, value_as, value_list_field, DfuDevice,
-        DfuOutput, Op, Timeout,
+        box_command, dfu_unsupported, map_route_missing, parse_dfu, value_as, value_list_field,
+        DfuDevice, DfuOutput, Op, Timeout,
     };
 
     const PATH: &str = "/usb/dfu";
@@ -116,10 +116,15 @@ pub(crate) mod ops {
         }
     }
 
-    /// Map a route-missing 404 (box image predating `/usb/dfu`) to
-    /// [`Error::UnsupportedByBox`].
-    pub(crate) fn compat<T>(result: Result<T>) -> Result<T> {
-        result.map_err(|e| map_route_missing(e, dfu_unsupported))
+    /// Finish one DFU call from the raw response: a dfu-util failure keeps
+    /// its output ([`crate::Error::DfuFailed`]) instead of collapsing into
+    /// the box's message, and a route-missing 404 (box image predating
+    /// `/usb/dfu`) maps to [`crate::Error::UnsupportedByBox`].
+    pub(crate) fn finish<T>(op: &Op<T>, response: Result<(u16, Value)>) -> Result<T> {
+        response
+            .and_then(|(status, body)| parse_dfu(status, body))
+            .and_then(op.parse)
+            .map_err(|e| map_route_missing(e, dfu_unsupported))
     }
 }
 
@@ -134,18 +139,22 @@ pub struct Dfu<'a> {
 impl Dfu<'_> {
     /// List DFU-capable devices on the box's bus (`dfu-util -l`).
     pub fn list(&self) -> crate::Result<Vec<DfuDevice>> {
-        ops::compat(self.client.run(ops::list()))
+        let op = ops::list();
+        ops::finish(&op, self.client.execute(&op.req))
     }
 
     /// Download `firmware` to the selected device (`dfu-util -D`). Returns
-    /// the captured dfu-util output.
+    /// the captured dfu-util output; a non-zero exit is
+    /// [`crate::Error::DfuFailed`], carrying the same output.
     pub fn download(&self, firmware: &[u8], opts: &DfuOptions) -> crate::Result<DfuOutput> {
-        ops::compat(self.client.run(ops::download(firmware, opts)))
+        let op = ops::download(firmware, opts);
+        ops::finish(&op, self.client.execute(&op.req))
     }
 
     /// Detach the selected device from DFU mode (`dfu-util -e`).
     pub fn detach(&self, opts: &DfuOptions) -> crate::Result<DfuOutput> {
-        ops::compat(self.client.run(ops::detach(opts)))
+        let op = ops::detach(opts);
+        ops::finish(&op, self.client.execute(&op.req))
     }
 }
 
@@ -160,17 +169,21 @@ pub struct AsyncDfu<'a> {
 impl AsyncDfu<'_> {
     /// List DFU-capable devices on the box's bus (`dfu-util -l`).
     pub async fn list(&self) -> crate::Result<Vec<DfuDevice>> {
-        ops::compat(self.client.run(ops::list()).await)
+        let op = ops::list();
+        ops::finish(&op, self.client.execute(&op.req).await)
     }
 
     /// Download `firmware` to the selected device (`dfu-util -D`). Returns
-    /// the captured dfu-util output.
+    /// the captured dfu-util output; a non-zero exit is
+    /// [`crate::Error::DfuFailed`], carrying the same output.
     pub async fn download(&self, firmware: &[u8], opts: &DfuOptions) -> crate::Result<DfuOutput> {
-        ops::compat(self.client.run(ops::download(firmware, opts)).await)
+        let op = ops::download(firmware, opts);
+        ops::finish(&op, self.client.execute(&op.req).await)
     }
 
     /// Detach the selected device from DFU mode (`dfu-util -e`).
     pub async fn detach(&self, opts: &DfuOptions) -> crate::Result<DfuOutput> {
-        ops::compat(self.client.run(ops::detach(opts)).await)
+        let op = ops::detach(opts);
+        ops::finish(&op, self.client.execute(&op.req).await)
     }
 }

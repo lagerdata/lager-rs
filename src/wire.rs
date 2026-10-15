@@ -1385,12 +1385,36 @@ pub struct DfuOutput {
     /// dfu-util exit code (0 on the success envelope).
     #[serde(default, deserialize_with = "lenient::opt_i64")]
     pub exit_code: Option<i64>,
-    /// Captured stdout.
+    /// Captured stdout (progress, and a raw download's device status).
     #[serde(default)]
     pub stdout: String,
-    /// Captured stderr (dfu-util writes progress here).
+    /// Captured stderr (warnings, and a DfuSe download's device status).
     #[serde(default)]
     pub stderr: String,
+}
+
+/// Interpret a `POST /usb/dfu` response. A run that reached dfu-util and
+/// exited non-zero (the failure envelope still carries its output in
+/// `value`) is [`Error::DfuFailed`] with both streams; everything else,
+/// including a box with no dfu-util and a timeout, goes through
+/// [`parse_command`] unchanged.
+pub fn parse_dfu(status: u16, body: Value) -> Result<CommandResponse> {
+    let failed = !(status == 200 && body.get("success").and_then(Value::as_bool) == Some(true));
+    if failed {
+        if let Some(output) = body
+            .get("value")
+            .and_then(|v| serde_json::from_value::<DfuOutput>(v.clone()).ok())
+            .filter(|o| o.exit_code.is_some())
+        {
+            return Err(Error::DfuFailed {
+                status,
+                exit_code: output.exit_code,
+                stdout: output.stdout,
+                stderr: output.stderr,
+            });
+        }
+    }
+    parse_command(status, body)
 }
 
 pub(crate) fn dfu_unsupported() -> Error {

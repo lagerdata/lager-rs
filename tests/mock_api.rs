@@ -1001,14 +1001,88 @@ fn dfu_download_sends_base64_firmware_and_options() {
     m.assert();
 }
 
+/// A dfu-util 0.11 download that fails: the device status lines go to
+/// stdout, the suffix warnings to stderr.
+const DFU_FAILED_STDOUT: &str = "dfu-util 0.11\n\n\
+Opening DFU capable USB device...\n\
+Device ID 0483:df11\n\
+Determining device status...\n\
+DFU state(10) = dfuERROR, status(4) = Memory erase function failed\n\
+Clearing status\n\
+Copying data from PC to DFU device\n\n\
+Download\t[                         ]   0%            0 bytes failed!\n\
+DFU state(10) = dfuERROR, status(3) = Device is unable to write memory\n";
+const DFU_SUFFIX_WARNINGS: &str = "dfu-util: Warning: Invalid DFU suffix signature\n\
+dfu-util: A valid DFU suffix will be required in a future dfu-util release\n";
+
 #[test]
-fn dfu_failure_surfaces_box_error() {
+fn dfu_failure_keeps_both_streams() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/usb/dfu");
+        // What a box before the fuller error message sends: the `error`
+        // quotes only the stderr tail, the whole output is in `value`.
+        then.status(502).json_body(json!({
+            "success": false, "action": "download",
+            "value": {"exit_code": 74, "stdout": DFU_FAILED_STDOUT, "stderr": DFU_SUFFIX_WARNINGS},
+            "error": "dfu-util exited with code 74: dfu-util: Warning: Invalid DFU suffix signature / \
+                      dfu-util: A valid DFU suffix will be required in a future dfu-util release"
+        }));
+    });
+    let lager = client(&server);
+    let err = lager
+        .dfu()
+        .download(b"\x00\x01", &Default::default())
+        .unwrap_err();
+    let text = err.to_string();
+    match err {
+        Error::DfuFailed {
+            status,
+            exit_code,
+            stdout,
+            stderr,
+        } => {
+            assert_eq!(status, 502);
+            assert_eq!(exit_code, Some(74));
+            assert_eq!(stdout, DFU_FAILED_STDOUT);
+            assert_eq!(stderr, DFU_SUFFIX_WARNINGS);
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert!(text.starts_with("box error (HTTP 502): dfu-util exited with code 74\nstderr:\n"));
+    assert!(text.contains("Invalid DFU suffix signature"));
+    assert!(text.contains("status(4) = Memory erase function failed"));
+    assert!(text.ends_with("status(3) = Device is unable to write memory"));
+    assert!(text.find("stderr:").unwrap() < text.find("\nstdout:\n").unwrap());
+}
+
+#[test]
+fn dfu_failure_with_no_output_says_so() {
     let server = MockServer::start();
     server.mock(|when, then| {
         when.method(POST).path("/usb/dfu");
         then.status(502).json_body(json!({
             "success": false, "action": "detach",
-            "value": {"exit_code": 74, "stdout": "", "stderr": "..."},
+            "value": {"exit_code": 74, "stdout": "", "stderr": ""},
+            "error": "dfu-util exited with code 74: no output"
+        }));
+    });
+    let lager = client(&server);
+    let err = lager.dfu().detach(&Default::default()).unwrap_err();
+    assert!(matches!(err, Error::DfuFailed { .. }), "unexpected error: {err:?}");
+    assert_eq!(
+        err.to_string(),
+        "box error (HTTP 502): dfu-util exited with code 74: no output"
+    );
+}
+
+#[test]
+fn dfu_failure_without_output_stays_a_box_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/usb/dfu");
+        then.status(502).json_body(json!({
+            "success": false, "action": "detach",
             "error": "dfu-util exited with code 74: No DFU capable USB device available"
         }));
     });
@@ -1018,6 +1092,28 @@ fn dfu_failure_surfaces_box_error() {
         Error::Box { status, message } => {
             assert_eq!(status, 502);
             assert!(message.contains("No DFU capable USB device"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn dfu_util_missing_stays_a_box_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/usb/dfu");
+        then.status(500).json_body(json!({
+            "success": false,
+            "error": "dfu-util-missing: dfu-util is not installed on this box. \
+                      Install it with 'lager box-config apt add dfu-util'"
+        }));
+    });
+    let lager = client(&server);
+    let err = lager.dfu().list().unwrap_err();
+    match err {
+        Error::Box { status, message } => {
+            assert_eq!(status, 500);
+            assert!(message.contains("dfu-util-missing"));
         }
         other => panic!("unexpected error: {other:?}"),
     }
@@ -2322,6 +2418,31 @@ mod async_parity {
         let state = lager.supply("supply1").state().await.unwrap();
         assert_eq!(state.voltage, Some(3.3));
         assert_eq!(state.enabled, Some(true));
+    }
+
+    #[tokio::test]
+    async fn async_dfu_failure_keeps_both_streams() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(POST).path("/usb/dfu");
+                then.status(502).json_body(json!({
+                    "success": false, "action": "detach",
+                    "value": {"exit_code": 74, "stdout": DFU_FAILED_STDOUT, "stderr": DFU_SUFFIX_WARNINGS},
+                    "error": "dfu-util exited with code 74"
+                }));
+            })
+            .await;
+        let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();
+        let err = lager.dfu().detach(&Default::default()).await.unwrap_err();
+        match err {
+            Error::DfuFailed { exit_code, stdout, stderr, .. } => {
+                assert_eq!(exit_code, Some(74));
+                assert_eq!(stdout, DFU_FAILED_STDOUT);
+                assert_eq!(stderr, DFU_SUFFIX_WARNINGS);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[tokio::test]
