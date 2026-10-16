@@ -1,0 +1,49 @@
+# cargo-deny policy. Run locally with `cargo deny check`.
+#
+# The license allow-list is the set the dependency tree already uses
+# (measured with `cargo metadata --all-features`), all permissive. A new
+# license appearing in the tree fails the check so it gets a deliberate look.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Unmaintained-crate notices with no maintained release to move to. Each one
+# names its parent so the entry can be dropped when that parent moves on.
+ignore = [
+    # async-std, via httpmock 0.7 (dev-dependency only; never ships to users).
+    { id = "RUSTSEC-2025-0052", reason = "dev-only, via httpmock" },
+    # backoff and instant, via rust_socketio 0.6 (`uart`/`rtt` features).
+    { id = "RUSTSEC-2025-0012", reason = "via rust_socketio, no maintained release" },
+    { id = "RUSTSEC-2024-0384", reason = "via rust_socketio -> backoff" },
+]
+
+[licenses]
+version = 2
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,145 @@
+# PR gate for lager-net.
+#
+# Each check below was measured on the tree before being added (rustc 1.99.1),
+# so a red run means the change under review broke something rather than that
+# the baseline was already dirty:
+#
+#   cargo fmt --all --check                          clean
+#   cargo clippy --all-targets -D warnings           0 findings on all 3 feature sets
+#   cargo doc --no-deps --all-features (-D warnings) clean
+#   cargo test, default features                     151 passed
+#   cargo test, --no-default-features --features async  29 passed
+#   cargo test, --all-features                       167 passed
+#   MSRV (rust-version = 1.75), MSRV-aware resolve   builds
+#
+# The feature matrix exists because the features are not additive in what they
+# compile: `async` alone drops the blocking client, and the examples declare
+# `required-features = ["blocking"]` specifically so that build keeps working.
+# `--all-features` is also what docs.rs builds.
+#
+# tests/hardware.rs is `#[ignore]`d, so `cargo test` here never needs a box.
+# Hardware runs live in hardware.yml.
+#
+# No path filters on pull_request: a workflow that does not report cannot be a
+# required check, and every job here is required.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            flags: ""
+          - name: async
+            flags: --no-default-features --features async
+          - name: all-features
+            flags: --all-features
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.name }}
+      - run: cargo clippy --locked --all-targets ${{ matrix.flags }} -- -D warnings
+
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            flags: ""
+          - name: async
+            flags: --no-default-features --features async
+          - name: all-features
+            flags: --all-features
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.name }}
+      - run: cargo test --locked ${{ matrix.flags }}
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo doc --locked --no-deps --all-features
+
+  # Checks the `rust-version` claim in Cargo.toml the way a downstream user hits
+  # it. The committed Cargo.lock cannot be used: it pins crates that need a
+  # newer rustc (idna_adapter, the icu_* family), and a dependent crate never
+  # sees our lockfile anyway. Resolving with the MSRV-aware fallback picks the
+  # newest versions that still support `rust-version`, which is what cargo
+  # does for a user whose toolchain is that old.
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read rust-version
+        id: msrv
+        run: |
+          version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          test -n "$version" || { echo "::error::no rust-version in Cargo.toml"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - name: Resolve dependencies for the MSRV
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+        run: cargo +stable generate-lockfile
+      - run: rustc +${{ steps.msrv.outputs.version }} --version
+      - run: cargo +${{ steps.msrv.outputs.version }} check --all-features --all-targets
