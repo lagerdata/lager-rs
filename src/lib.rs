@@ -177,3 +177,5 @@ pub use wire::{
     UsbDeviceFilter, UsbDeviceInfo, WattReading, WebcamStatus, WebcamStream, WifiAccessPoint,
     WifiConnection, WifiInterface,
 };
+
+pub fn gate_probe( )->u8{ let unused = 1; 0 }
