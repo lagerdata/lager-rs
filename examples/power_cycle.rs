@@ -17,7 +17,11 @@ fn main() -> lager::Result<()> {
     println!("box: {}", lager.base_url());
 
     let status = lager.status()?;
-    println!("box version {} with {} nets", status.version, status.nets.len());
+    println!(
+        "box version {} with {} nets",
+        status.version,
+        status.nets.len()
+    );
 
     let supply = lager.supply(&supply_net);
     let adc = lager.adc(&adc_net);

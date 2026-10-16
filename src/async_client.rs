@@ -355,8 +355,7 @@ impl AsyncLagerBox {
                 .resolve_token_async(&auth_url, token.as_deref())
                 .await
             {
-                let (status, gateway, resp_body) =
-                    self.send_once(base, req, Some(&fresh)).await?;
+                let (status, gateway, resp_body) = self.send_once(base, req, Some(&fresh)).await?;
                 let Some(auth_url) = gateway else {
                     return Ok((status, resp_body));
                 };
@@ -434,9 +433,7 @@ impl AsyncLagerBox {
         let body: Value = match resp.json().await {
             Ok(body) => body,
             Err(e) if e.is_timeout() => return Err(Error::Timeout(e.to_string())),
-            Err(e) if status < 400 => {
-                return Err(Error::Decode(format!("non-JSON response: {e}")))
-            }
+            Err(e) if status < 400 => return Err(Error::Decode(format!("non-JSON response: {e}"))),
             // Error responses (incl. gateway denials) may have no JSON body.
             Err(_) => Value::Null,
         };
@@ -461,7 +458,10 @@ impl AsyncLagerBox {
     async fn nets_raw(&self) -> Result<Vec<Value>> {
         let body = match self.get_json("/nets/list").await {
             Ok(body) => body,
-            Err(primary) => self.get_json("/uart/nets/list").await.map_err(|_| primary)?,
+            Err(primary) => self
+                .get_json("/uart/nets/list")
+                .await
+                .map_err(|_| primary)?,
         };
         Ok(wire::nets_list_values(body))
     }
@@ -552,7 +552,8 @@ impl AsyncLagerBox {
     /// refreshes it; a box held by someone else fails with
     /// [`Error::Box`] (HTTP 409) naming the holder.
     pub async fn lock(&self, user: &str) -> Result<BoxLock> {
-        self.lock_call(&wire::lock_acquire(user, "user", None)).await
+        self.lock_call(&wire::lock_acquire(user, "user", None))
+            .await
     }
 
     /// Claim the box with an explicit holder type and TTL.
@@ -652,82 +653,130 @@ impl AsyncLagerBox {
 
     /// Handle for a power-supply net.
     pub fn supply(&self, name: impl Into<String>) -> AsyncSupply<'_> {
-        AsyncSupply { client: self, name: name.into() }
+        AsyncSupply {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a battery-simulator net.
     pub fn battery(&self, name: impl Into<String>) -> AsyncBattery<'_> {
-        AsyncBattery { client: self, name: name.into() }
+        AsyncBattery {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for an electronic-load net.
     pub fn eload(&self, name: impl Into<String>) -> AsyncEload<'_> {
-        AsyncEload { client: self, name: name.into() }
+        AsyncEload {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a solar-simulator net (EA PSB photovoltaic mode).
     pub fn solar(&self, name: impl Into<String>) -> AsyncSolar<'_> {
-        AsyncSolar { client: self, name: name.into() }
+        AsyncSolar {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a GPIO net.
     pub fn gpio(&self, name: impl Into<String>) -> AsyncGpio<'_> {
-        AsyncGpio { client: self, name: name.into() }
+        AsyncGpio {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for an ADC net.
     pub fn adc(&self, name: impl Into<String>) -> AsyncAdc<'_> {
-        AsyncAdc { client: self, name: name.into() }
+        AsyncAdc {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a DAC net.
     pub fn dac(&self, name: impl Into<String>) -> AsyncDac<'_> {
-        AsyncDac { client: self, name: name.into() }
+        AsyncDac {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a thermocouple net.
     pub fn thermocouple(&self, name: impl Into<String>) -> AsyncThermocouple<'_> {
-        AsyncThermocouple { client: self, name: name.into() }
+        AsyncThermocouple {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a watt-meter net.
     pub fn watt_meter(&self, name: impl Into<String>) -> AsyncWattMeter<'_> {
-        AsyncWattMeter { client: self, name: name.into() }
+        AsyncWattMeter {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for an energy-analyzer net.
     pub fn energy_analyzer(&self, name: impl Into<String>) -> AsyncEnergyAnalyzer<'_> {
-        AsyncEnergyAnalyzer { client: self, name: name.into() }
+        AsyncEnergyAnalyzer {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for an SPI bus net.
     pub fn spi(&self, name: impl Into<String>) -> AsyncSpi<'_> {
-        AsyncSpi { client: self, name: name.into() }
+        AsyncSpi {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for an I2C bus net.
     pub fn i2c(&self, name: impl Into<String>) -> AsyncI2c<'_> {
-        AsyncI2c { client: self, name: name.into() }
+        AsyncI2c {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a USB hub port net.
     pub fn usb(&self, name: impl Into<String>) -> AsyncUsbPort<'_> {
-        AsyncUsbPort { client: self, name: name.into() }
+        AsyncUsbPort {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a robot-arm net (Rotrics Dexarm).
     pub fn arm(&self, name: impl Into<String>) -> AsyncArm<'_> {
-        AsyncArm { client: self, name: name.into() }
+        AsyncArm {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a webcam net (MJPEG streaming).
     pub fn webcam(&self, name: impl Into<String>) -> AsyncWebcam<'_> {
-        AsyncWebcam { client: self, name: name.into() }
+        AsyncWebcam {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a router net (MikroTik RouterOS).
     pub fn router(&self, name: impl Into<String>) -> AsyncRouter<'_> {
-        AsyncRouter { client: self, name: name.into() }
+        AsyncRouter {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for the box's BLE adapter (box-level, not a saved net).
@@ -753,7 +802,11 @@ impl AsyncLagerBox {
     /// Handle for a debug-probe net (flash/erase/reset/read_memory).
     /// Talks to the box debug service on port 8765.
     pub fn debug(&self, name: impl Into<String>) -> AsyncDebugNet<'_> {
-        AsyncDebugNet { client: self, name: name.into(), record: Default::default() }
+        AsyncDebugNet {
+            client: self,
+            name: name.into(),
+            record: Default::default(),
+        }
     }
 
     /// Handle for an oscilloscope net. **Stub:** see [`Scope`].

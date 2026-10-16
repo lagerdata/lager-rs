@@ -167,6 +167,8 @@ pub use nets::uart::Uart;
 pub use nets::rtt::RttSession;
 
 // Structured result types, re-exported from the wire layer.
+pub use nets::i2c::I2cEffectiveConfig;
+pub use nets::spi::SpiEffectiveConfig;
 pub use wire::{
     ArmPosition, BatteryState, BleCharacteristic, BleDevice, BleDeviceInfo, BleService,
     BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxLock,
@@ -175,5 +177,3 @@ pub use wire::{
     UsbDeviceFilter, UsbDeviceInfo, WattReading, WebcamStatus, WebcamStream, WifiAccessPoint,
     WifiConnection, WifiInterface,
 };
-pub use nets::i2c::I2cEffectiveConfig;
-pub use nets::spi::SpiEffectiveConfig;

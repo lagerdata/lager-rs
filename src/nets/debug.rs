@@ -39,8 +39,7 @@ use crate::wire::{self, DebugConnection, DebugInfo, DebugStatus, Timeout};
 /// in-crate so firmware upload adds no extra dependency (also used by
 /// [`crate::nets::dfu`]).
 pub(crate) fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -77,7 +76,11 @@ pub enum FirmwareKind {
 
 impl FirmwareKind {
     fn from_path(path: &Path) -> Result<Self> {
-        match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase) {
+        match path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+        {
             Some(ext) if ext == "hex" => Ok(FirmwareKind::Hex),
             Some(ext) if ext == "elf" => Ok(FirmwareKind::Elf),
             Some(ext) if ext == "bin" => Ok(FirmwareKind::Bin),
@@ -187,7 +190,11 @@ pub(crate) mod ops {
         if let Some(cfg) = &opts.openocd_config {
             extra["openocd_config"] = json!(base64_encode(cfg));
         }
-        ("/debug/connect".into(), debug_body(net, extra), CONNECT_TIMEOUT)
+        (
+            "/debug/connect".into(),
+            debug_body(net, extra),
+            CONNECT_TIMEOUT,
+        )
     }
 
     pub(crate) fn disconnect(net: &Value, keep_running: bool) -> (String, Value, Timeout) {
@@ -207,10 +214,18 @@ pub(crate) mod ops {
     }
 
     pub(crate) fn erase(net: &Value) -> (String, Value, Timeout) {
-        ("/debug/erase".into(), debug_body(net, json!({})), ERASE_TIMEOUT)
+        (
+            "/debug/erase".into(),
+            debug_body(net, json!({})),
+            ERASE_TIMEOUT,
+        )
     }
 
-    pub(crate) fn read_memory(net: &Value, address: u64, length: usize) -> (String, Value, Timeout) {
+    pub(crate) fn read_memory(
+        net: &Value,
+        address: u64,
+        length: usize,
+    ) -> (String, Value, Timeout) {
         (
             "/debug/memrd".into(),
             debug_body(net, json!({ "start_addr": address, "length": length })),
@@ -219,11 +234,19 @@ pub(crate) mod ops {
     }
 
     pub(crate) fn info(net: &Value) -> (String, Value, Timeout) {
-        ("/debug/info".into(), debug_body(net, json!({})), QUICK_TIMEOUT)
+        (
+            "/debug/info".into(),
+            debug_body(net, json!({})),
+            QUICK_TIMEOUT,
+        )
     }
 
     pub(crate) fn status(net: &Value) -> (String, Value, Timeout) {
-        ("/debug/status".into(), debug_body(net, json!({})), QUICK_TIMEOUT)
+        (
+            "/debug/status".into(),
+            debug_body(net, json!({})),
+            QUICK_TIMEOUT,
+        )
     }
 
     /// Build the flash body. `kind` picks the payload field; `address` is
@@ -242,7 +265,11 @@ pub(crate) mod ops {
                 "binfile": { "content": b64, "address": address.unwrap_or(0x0800_0000) }
             }),
         };
-        ("/debug/flash".into(), debug_body(net, payload), FLASH_TIMEOUT)
+        (
+            "/debug/flash".into(),
+            debug_body(net, payload),
+            FLASH_TIMEOUT,
+        )
     }
 
     /// Build the RTT body. RTT streaming is blocking-only (the async client
@@ -599,7 +626,8 @@ impl AsyncDebugNet<'_> {
     pub async fn flash_bin(&self, firmware_path: impl AsRef<Path>, address: u32) -> Result<()> {
         let contents = std::fs::read(firmware_path.as_ref())
             .map_err(|e| Error::Config(format!("cannot read firmware: {e}")))?;
-        self.flash_bytes(&contents, FirmwareKind::Bin, Some(address)).await
+        self.flash_bytes(&contents, FirmwareKind::Bin, Some(address))
+            .await
     }
 
     /// Flash raw firmware bytes of a known kind.

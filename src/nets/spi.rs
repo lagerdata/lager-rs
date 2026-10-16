@@ -184,7 +184,13 @@ pub(crate) mod ops {
             params.insert("cs_mode".to_string(), json!(c.as_str()));
         }
         Op {
-            req: net_command(name, ROLE, "config", Value::Object(params), Timeout::Default),
+            req: net_command(
+                name,
+                ROLE,
+                "config",
+                Value::Object(params),
+                Timeout::Default,
+            ),
             parse: value_as::<SpiEffectiveConfig>,
         }
     }

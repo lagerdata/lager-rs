@@ -277,7 +277,10 @@ fn non_debug_net_name_is_rejected() {
     let lager = client(&server);
     let err = lager.debug("supply1").info().unwrap_err();
     match err {
-        Error::Box { status: 404, message } => assert!(message.contains("not a debug net")),
+        Error::Box {
+            status: 404,
+            message,
+        } => assert!(message.contains("not a debug net")),
         other => panic!("expected 404 Error::Box, got {other:?}"),
     }
 }
@@ -318,8 +321,7 @@ fn net_record_cache_is_invalidated_when_an_op_fails() {
     });
     server.mock(|when, then| {
         when.method(POST).path("/debug/status");
-        then.status(200)
-            .json_body(json!({"connected": false}));
+        then.status(200).json_body(json!({"connected": false}));
     });
 
     let lager = client(&server);

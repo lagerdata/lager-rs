@@ -18,9 +18,9 @@ pub mod energy;
 pub mod gpio;
 pub mod i2c;
 pub mod router;
-pub mod scope;
 #[cfg(feature = "rtt")]
 pub mod rtt;
+pub mod scope;
 #[cfg(any(feature = "uart", feature = "rtt"))]
 pub(crate) mod sio;
 pub mod solar;

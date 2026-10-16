@@ -944,7 +944,9 @@ pub fn value_arm_position(resp: CommandResponse) -> Result<ArmPosition> {
         .value
         .as_ref()
         .and_then(Value::as_array)
-        .ok_or_else(|| Error::Decode(format!("expected [x, y, z] 'value', got {:?}", resp.value)))?;
+        .ok_or_else(|| {
+            Error::Decode(format!("expected [x, y, z] 'value', got {:?}", resp.value))
+        })?;
     match arr.as_slice() {
         [x, y, z] => match (as_f64(x), as_f64(y), as_f64(z)) {
             (Some(x), Some(y), Some(z)) => Ok(ArmPosition { x, y, z }),
@@ -1205,8 +1207,7 @@ pub(crate) fn value_list_field<T: DeserializeOwned>(
         .and_then(|v| v.get(field))
         .cloned()
         .ok_or_else(|| Error::Decode(format!("response 'value' has no '{field}' list")))?;
-    serde_json::from_value(list)
-        .map_err(|e| Error::Decode(format!("invalid '{field}' shape: {e}")))
+    serde_json::from_value(list).map_err(|e| Error::Decode(format!("invalid '{field}' shape: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -1713,9 +1714,15 @@ mod tests {
 
     #[test]
     fn base_url_normalization() {
-        assert_eq!(base_url("192.168.1.42").unwrap(), "http://192.168.1.42:9000");
+        assert_eq!(
+            base_url("192.168.1.42").unwrap(),
+            "http://192.168.1.42:9000"
+        );
         assert_eq!(base_url("mybox.local/").unwrap(), "http://mybox.local:9000");
-        assert_eq!(base_url("192.168.1.42:8080").unwrap(), "http://192.168.1.42:8080");
+        assert_eq!(
+            base_url("192.168.1.42:8080").unwrap(),
+            "http://192.168.1.42:8080"
+        );
         assert_eq!(base_url("http://box:9000").unwrap(), "http://box:9000");
         assert!(base_url("").is_err());
         assert!(base_url("http://").is_err());
@@ -1778,18 +1785,14 @@ mod tests {
         assert_eq!(applied.allow_destructive, Some(false));
 
         // A clearing PUT echoes `safety_limits: null`.
-        let cleared =
-            parse_safety_limits(200, json!({"ok": true, "safety_limits": null})).unwrap();
+        let cleared = parse_safety_limits(200, json!({"ok": true, "safety_limits": null})).unwrap();
         assert!(cleared.is_none());
     }
 
     #[test]
     fn parse_safety_limits_surfaces_box_refusals() {
-        let err = parse_safety_limits(
-            400,
-            json!({"error": "max_power is not supported: ..."}),
-        )
-        .unwrap_err();
+        let err = parse_safety_limits(400, json!({"error": "max_power is not supported: ..."}))
+            .unwrap_err();
         match err {
             Error::Box { status, message } => {
                 assert_eq!(status, 400);

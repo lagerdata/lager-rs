@@ -19,7 +19,9 @@ pub(crate) mod ops {
     use serde_json::{json, Value};
 
     use crate::error::Result;
-    use crate::wire::{net_command, unit, value_as, CommandResponse, Op, RouterSystemInfo, Timeout};
+    use crate::wire::{
+        net_command, unit, value_as, CommandResponse, Op, RouterSystemInfo, Timeout,
+    };
 
     // Router saved-net records may carry the role string "router" or the
     // legacy alias "mikrotik" (both dispatch to the same box handler). The

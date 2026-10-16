@@ -72,7 +72,13 @@ pub(crate) mod ops {
             params.insert("pull_ups".to_string(), json!(p));
         }
         Op {
-            req: net_command(name, ROLE, "config", Value::Object(params), Timeout::Default),
+            req: net_command(
+                name,
+                ROLE,
+                "config",
+                Value::Object(params),
+                Timeout::Default,
+            ),
             parse: value_as::<I2cEffectiveConfig>,
         }
     }
@@ -123,12 +129,7 @@ pub(crate) mod ops {
         }
     }
 
-    pub(crate) fn write_read(
-        name: &str,
-        address: u16,
-        data: &[u8],
-        num_bytes: u32,
-    ) -> Op<Vec<u8>> {
+    pub(crate) fn write_read(name: &str, address: u16, data: &[u8], num_bytes: u32) -> Op<Vec<u8>> {
         Op {
             req: net_command(
                 name,

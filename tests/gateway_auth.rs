@@ -79,8 +79,7 @@ impl Drop for StoreFile {
 /// signature verification is the gateway's job).
 fn fake_jwt(tag: &str, exp_offset_secs: i64) -> String {
     fn b64url(data: &[u8]) -> String {
-        const ALPHABET: &[u8] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
         let mut out = String::new();
         for chunk in data.chunks(3) {
             let mut acc = 0u32;
@@ -260,7 +259,10 @@ fn expired_token_is_refreshed_and_rotated_cookies_persisted() {
             .path("/api/auth/refresh")
             .header("Cookie", "refreshToken=old-cookie");
         then.status(200)
-            .header("Set-Cookie", "refreshToken=rotated-cookie; Path=/; HttpOnly")
+            .header(
+                "Set-Cookie",
+                "refreshToken=rotated-cookie; Path=/; HttpOnly",
+            )
             .json_body(json!({"accessToken": fresh}));
     });
 
@@ -316,7 +318,9 @@ fn gated_box_without_login_is_auth_required() {
         other => panic!("expected AuthRequired, got {other:?}"),
     }
     // The message tells the user exactly how to fix it.
-    assert!(err.to_string().contains("lager login https://auth.example.com"));
+    assert!(err
+        .to_string()
+        .contains("lager login https://auth.example.com"));
 }
 
 #[test]
@@ -358,7 +362,10 @@ fn forbidden_maps_to_box_error_with_grant_hint() {
         .unwrap();
     let err = lager.adc("adc1").read().unwrap_err();
     match &err {
-        Error::Box { status: 403, message } => {
+        Error::Box {
+            status: 403,
+            message,
+        } => {
             assert!(message.contains("not authorized"), "message: {message}");
         }
         other => panic!("expected Box error, got {other:?}"),
@@ -373,12 +380,16 @@ fn ordinary_application_401_is_not_treated_as_gateway() {
     // No discovery header: this is the box itself answering 401.
     let m = server.mock(|when, then| {
         when.method(POST).path("/net/command");
-        then.status(401).json_body(json!({"error": "some box-side 401"}));
+        then.status(401)
+            .json_body(json!({"error": "some box-side 401"}));
     });
     let lager = LagerBox::connect(server.address().to_string()).unwrap();
     let err = lager.adc("adc1").read().unwrap_err();
     match err {
-        Error::Box { status: 401, message } => assert_eq!(message, "some box-side 401"),
+        Error::Box {
+            status: 401,
+            message,
+        } => assert_eq!(message, "some box-side 401"),
         other => panic!("expected plain Box error, got {other:?}"),
     }
     m.assert_hits(1);

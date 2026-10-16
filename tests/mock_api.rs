@@ -46,16 +46,18 @@ fn gpio_output_and_toggle() {
             "netname": "gpo1", "role": "gpio", "action": "output",
             "params": {"level": "low"}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "output", "message": "Output set LOW", "value": 0}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "output", "message": "Output set LOW", "value": 0}),
+        );
     });
     let toggle = server.mock(|when, then| {
         when.method(POST).path("/net/command").json_body(json!({
             "netname": "gpo1", "role": "gpio", "action": "output",
             "params": {"level": "toggle"}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "output", "message": "Toggled to HIGH", "value": 1}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "output", "message": "Toggled to HIGH", "value": 1}),
+        );
     });
     let lager = client(&server);
     let gpio = lager.gpio("gpo1");
@@ -105,8 +107,9 @@ fn adc_read() {
         when.method(POST).path("/net/command").json_body(json!({
             "netname": "adc1", "role": "adc", "action": "read", "params": {}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "read", "message": "1.5 V", "value": 1.5}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "read", "message": "1.5 V", "value": 1.5}),
+        );
     });
     let lager = client(&server);
     assert_eq!(lager.adc("adc1").read().unwrap(), 1.5);
@@ -120,15 +123,17 @@ fn dac_set_and_read() {
         when.method(POST).path("/net/command").json_body(json!({
             "netname": "dac1", "role": "dac", "action": "set", "params": {"value": 2.5}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "set", "message": "Set to 2.500000 V", "value": 2.5}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "set", "message": "Set to 2.500000 V", "value": 2.5}),
+        );
     });
     let read = server.mock(|when, then| {
         when.method(POST).path("/net/command").json_body(json!({
             "netname": "dac1", "role": "dac", "action": "read", "params": {}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "read", "message": "2.5 V", "value": 2.5}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "read", "message": "2.5 V", "value": 2.5}),
+        );
     });
     let lager = client(&server);
     let dac = lager.dac("dac1");
@@ -145,8 +150,9 @@ fn thermocouple_read() {
         when.method(POST).path("/net/command").json_body(json!({
             "netname": "tc1", "role": "thermocouple", "action": "read", "params": {}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "read", "message": "24.8 °C", "value": 24.8}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "read", "message": "24.8 °C", "value": 24.8}),
+        );
     });
     let lager = client(&server);
     assert_eq!(lager.thermocouple("tc1").read().unwrap(), 24.8);
@@ -165,8 +171,9 @@ fn watt_power_and_all() {
             "netname": "watt1", "role": "watt-meter", "action": "power",
             "params": {"duration": 0.1}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "power", "message": "0.0523 W", "value": 0.0523}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "power", "message": "0.0523 W", "value": 0.0523}),
+        );
     });
     let all = server.mock(|when, then| {
         when.method(POST).path("/net/command").json_body(json!({
@@ -495,24 +502,27 @@ fn i2c_scan_read_write_transfer() {
             "netname": "i2c1", "role": "i2c", "action": "read",
             "params": {"address": 0x68, "num_bytes": 2}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "read", "message": "75 00", "value": [0x75, 0x00]}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "read", "message": "75 00", "value": [0x75, 0x00]}),
+        );
     });
     let write = server.mock(|when, then| {
         when.method(POST).path("/net/command").json_body(json!({
             "netname": "i2c1", "role": "i2c", "action": "write",
             "params": {"address": 0x68, "data": [0x6B, 0x00]}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "write", "message": "Wrote 2 byte(s) to 0x68"}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "write", "message": "Wrote 2 byte(s) to 0x68"}),
+        );
     });
     let transfer = server.mock(|when, then| {
         when.method(POST).path("/net/command").json_body(json!({
             "netname": "i2c1", "role": "i2c", "action": "transfer",
             "params": {"address": 0x68, "data": [0x75], "num_bytes": 1}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "transfer", "message": "68", "value": [0x68]}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "transfer", "message": "68", "value": [0x68]}),
+        );
     });
     let lager = client(&server);
     let i2c = lager.i2c("i2c1");
@@ -541,7 +551,10 @@ fn i2c_configure() {
         }));
     });
     let lager = client(&server);
-    let cfg = lager.i2c("i2c1").configure(Some(400_000), Some(true)).unwrap();
+    let cfg = lager
+        .i2c("i2c1")
+        .configure(Some(400_000), Some(true))
+        .unwrap();
     assert_eq!(cfg.frequency_hz, Some(400_000));
     assert_eq!(cfg.pull_ups, Some(true));
     m.assert();
@@ -558,22 +571,25 @@ fn supply_set_enable_disable() {
         when.method(POST).path("/supply/command").json_body(json!({
             "netname": "supply1", "action": "voltage", "params": {"value": 3.3}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "voltage", "message": "Voltage set to 3.3V"}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "voltage", "message": "Voltage set to 3.3V"}),
+        );
     });
     let enable = server.mock(|when, then| {
         when.method(POST).path("/supply/command").json_body(json!({
             "netname": "supply1", "action": "enable", "params": {}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "enable", "message": "Supply output enabled"}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "enable", "message": "Supply output enabled"}),
+        );
     });
     let disable = server.mock(|when, then| {
         when.method(POST).path("/supply/command").json_body(json!({
             "netname": "supply1", "action": "disable", "params": {}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "disable", "message": "Supply output disabled"}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "disable", "message": "Supply output disabled"}),
+        );
     });
     let lager = client(&server);
     let supply = lager.supply("supply1");
@@ -635,8 +651,9 @@ fn battery_setters_and_state() {
         when.method(POST).path("/battery/command").json_body(json!({
             "netname": "battery1", "action": "set_mode", "params": {"mode_type": "dynamic"}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "set_mode", "message": "Mode set to dynamic"}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "set_mode", "message": "Mode set to dynamic"}),
+        );
     });
     let enable = server.mock(|when, then| {
         when.method(POST).path("/battery/command").json_body(json!({
@@ -1069,7 +1086,10 @@ fn dfu_failure_with_no_output_says_so() {
     });
     let lager = client(&server);
     let err = lager.dfu().detach(&Default::default()).unwrap_err();
-    assert!(matches!(err, Error::DfuFailed { .. }), "unexpected error: {err:?}");
+    assert!(
+        matches!(err, Error::DfuFailed { .. }),
+        "unexpected error: {err:?}"
+    );
     assert_eq!(
         err.to_string(),
         "box error (HTTP 502): dfu-util exited with code 74: no output"
@@ -1433,15 +1453,17 @@ fn arm_motor_home_save_and_acceleration() {
         when.method(POST).path("/net/command").json_body(json!({
             "netname": "arm1", "role": "arm", "action": "enable_motor", "params": {}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "enable_motor", "message": "Arm motors enabled"}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "enable_motor", "message": "Arm motors enabled"}),
+        );
     });
     let disable = server.mock(|when, then| {
         when.method(POST).path("/net/command").json_body(json!({
             "netname": "arm1", "role": "arm", "action": "disable_motor", "params": {}
         }));
-        then.status(200)
-            .json_body(json!({"success": true, "action": "disable_motor", "message": "Arm motors disabled"}));
+        then.status(200).json_body(
+            json!({"success": true, "action": "disable_motor", "message": "Arm motors disabled"}),
+        );
     });
     let save = server.mock(|when, then| {
         when.method(POST).path("/net/command").json_body(json!({
@@ -1846,8 +1868,14 @@ fn ble_info_connect_disconnect() {
     let ble = lager.ble();
     let device = ble.info("AA:BB:CC:DD:EE:FF").unwrap();
     assert!(device.connected);
-    assert_eq!(device.services[0].description.as_deref(), Some("Battery Service"));
-    assert_eq!(device.services[0].characteristics[0].properties, ["read", "notify"]);
+    assert_eq!(
+        device.services[0].description.as_deref(),
+        Some("Battery Service")
+    );
+    assert_eq!(
+        device.services[0].characteristics[0].properties,
+        ["read", "notify"]
+    );
     ble.connect("AA:BB:CC:DD:EE:FF").unwrap();
     ble.disconnect("AA:BB:CC:DD:EE:FF").unwrap();
     info.assert();
@@ -2036,14 +2064,19 @@ fn blufi_provision_wifi_scan_status_version() {
     });
     let lager = client(&server);
     let blufi = lager.blufi();
-    let result = blufi.provision("BLUFI_DEVICE", "labnet", "hunter22").unwrap();
+    let result = blufi
+        .provision("BLUFI_DEVICE", "labnet", "hunter22")
+        .unwrap();
     assert_eq!(result.sta_conn, Some(0));
     let networks = blufi.wifi_scan("BLUFI_DEVICE").unwrap();
     assert_eq!(networks[0].ssid, "labnet");
     assert_eq!(networks[0].rssi, Some(-45));
     let state = blufi.status("BLUFI_DEVICE").unwrap();
     assert_eq!(state.op_mode_name.as_deref(), Some("STA"));
-    assert_eq!(blufi.version("BLUFI_DEVICE").unwrap().as_deref(), Some("1.0"));
+    assert_eq!(
+        blufi.version("BLUFI_DEVICE").unwrap().as_deref(),
+        Some("1.0")
+    );
     provision.assert();
     wifi_scan.assert();
     status.assert();
@@ -2167,7 +2200,10 @@ fn scope_is_a_stub() {
     let lager = client(&server);
     assert!(matches!(
         lager.scope("scope1").capture().unwrap_err(),
-        Error::NotSupportedByBox { feature: "scope", .. }
+        Error::NotSupportedByBox {
+            feature: "scope",
+            ..
+        }
     ));
 }
 
@@ -2391,8 +2427,9 @@ mod async_parity {
                 when.method(POST).path("/net/command").json_body(json!({
                     "netname": "adc1", "role": "adc", "action": "read", "params": {}
                 }));
-                then.status(200)
-                    .json_body(json!({"success": true, "action": "read", "message": "1.5 V", "value": 1.5}));
+                then.status(200).json_body(
+                    json!({"success": true, "action": "read", "message": "1.5 V", "value": 1.5}),
+                );
             })
             .await;
         let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();
@@ -2436,7 +2473,12 @@ mod async_parity {
         let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();
         let err = lager.dfu().detach(&Default::default()).await.unwrap_err();
         match err {
-            Error::DfuFailed { exit_code, stdout, stderr, .. } => {
+            Error::DfuFailed {
+                exit_code,
+                stdout,
+                stderr,
+                ..
+            } => {
                 assert_eq!(exit_code, Some(74));
                 assert_eq!(stdout, DFU_FAILED_STDOUT);
                 assert_eq!(stderr, DFU_SUFFIX_WARNINGS);
