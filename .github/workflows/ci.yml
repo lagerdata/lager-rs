@@ -53,6 +53,15 @@ jobs:
           toolchain: stable
           components: rustfmt
       - run: cargo fmt --all --check
+      # hardware.yml's log is public, and test output there can name nearby
+      # devices and networks. Keep it captured; see the comment in hardware.yml.
+      - name: Hardware test output stays captured
+        run: |
+          if grep -vE '^\s*#' .github/workflows/hardware.yml \
+               | grep -nE -- 'nocapture|show-output|RUST_TEST_NOCAPTURE'; then
+            echo "::error file=.github/workflows/hardware.yml::hardware tests must not print passing test output to the public log"
+            exit 1
+          fi
 
   clippy:
     name: clippy (${{ matrix.name }})

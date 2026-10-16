@@ -232,10 +232,9 @@ fn router_connect_and_reads() {
 fn ble_scan_finds_advertisers() {
     let lager = lager();
     let devices = lager.ble().scan(5.0).unwrap();
-    eprintln!("found {} BLE device(s):", devices.len());
-    for d in &devices {
-        eprintln!("  {} {} ({:?} dBm)", d.address, d.name, d.rssi);
-    }
+    // Counts only: a scan picks up whatever is nearby, and CI logs are public.
+    let named = devices.iter().filter(|d| !d.name.is_empty()).count();
+    eprintln!("found {} BLE device(s), {named} named", devices.len());
 }
 
 #[test]
@@ -243,8 +242,9 @@ fn ble_scan_finds_advertisers() {
 fn wifi_status_and_scan() {
     let lager = lager();
     let wifi = lager.wifi();
+    // No SSIDs: they name the network the box sits on, and CI logs are public.
     for i in wifi.status().unwrap() {
-        eprintln!("{}: {} ({})", i.interface, i.ssid, i.state);
+        eprintln!("{}: {}", i.interface, i.state);
     }
     let aps = wifi.scan("wlan0").unwrap();
     eprintln!("found {} access point(s)", aps.len());
