@@ -168,20 +168,30 @@ jobs:
       # per-net I/O but not whole test bodies.
       # wifi_status_and_scan is skipped on every run: it scans on wlan0, and
       # the bench box reaches the network over that interface.
+      #
+      # No --nocapture, ever. This log is public, and the tests print what the
+      # bench hears and sees: BLE and Wi-Fi scan results name devices and
+      # networks that belong to whoever is nearby. libtest captures each
+      # test's output and shows it only when that test fails.
       - name: Hardware tests
         run: |
           skip=(--skip wifi_status_and_scan --skip debug_flash_reset_read)
           if [ "${{ inputs.flash }}" = true ]; then skip=(--skip wifi_status_and_scan); fi
-          cargo test --locked --test hardware -- --ignored --test-threads=1 --nocapture "${skip[@]}" \
-            2>&1 | tee hardware.log
-          exit "${PIPESTATUS[0]}"
+          cargo test --locked --test hardware -- --ignored --test-threads=1 "${skip[@]}"
 
+      # A test whose variable is unset returns early and reports a pass. Name
+      # those from the variables themselves, read out of tests/hardware.rs so
+      # the list cannot drift, rather than from captured test output.
       - name: Report skipped nets
         if: always()
         run: |
-          if grep -q '^skipping:' hardware.log 2>/dev/null; then
-            grep '^skipping:' hardware.log | sed 's/^/::notice::/'
-          fi
+          grep -o 'net_from_env("LAGER_TEST_[A-Z_]*")' tests/hardware.rs \
+            | grep -o 'LAGER_TEST_[A-Z_]*' | sort -u \
+            | while read -r var; do
+                if [ -z "${!var:-}" ]; then
+                  echo "::notice::$var is not set; the tests that need it skipped"
+                fi
+              done
 
       # Best effort, bounded per net: a failure here warns and leaves the run's
       # verdict to the tests. Runs only if this job holds the lock, so it never
