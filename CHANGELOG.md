@@ -2,6 +2,8 @@
 
 All notable changes to the `lager-net` crate are documented here.
 
+## [Unreleased]
+
 ## [0.7.0] - 2026-10-15
 
 ### Changed
@@ -186,3 +188,50 @@ per-net safety limits and bi-directional (interactive) RTT.
 
 - README gained a "Minimum box version" matrix covering `state()`,
   `usb_devices()`, `dfu()`, and the lock API.
+
+## [0.2.0] - 2026-07-22
+
+### Added
+
+- **Gateway auth for boxes behind an authenticating reverse proxy.** Such a
+  box rejects unauthenticated traffic with 401 and an `X-Gateway-Auth-Url`
+  discovery header. The crate now speaks the same contract as the Lager CLI,
+  on every transport: port 9000 commands, the port 8765 debug service, RTT
+  streaming, and the UART Socket.IO handshake. Plain boxes are unaffected:
+  no header is sent and no auth code runs.
+
+- **CLI session reuse.** After `lager login <auth_url>`, the crate reads the
+  CLI's token store (`~/.lager_gateway_auth`, or `LAGER_GATEWAY_AUTH_FILE`),
+  attaches `Authorization: Bearer`, and refreshes expired access tokens. On
+  first contact it learns the box's auth server from the discovery header and
+  retries the denied request within the same call.
+
+- **Pinned tokens for CI:** `LagerBox::builder(host).bearer_token(...)`, or
+  the `LAGER_GATEWAY_TOKEN` environment variable, for machines with no CLI
+  login.
+
+- **`Error::AuthRequired`** names the auth server and the command to run.
+  A gateway 403 or 503 maps to an error that says what to do.
+
+### Fixed
+
+- Builds with `--no-default-features --features async`: doctests that use
+  the blocking client are gated, and the `power_cycle` example declares
+  `required-features = ["blocking"]`.
+
+## [0.1.0] - 2026-07-14
+
+Initial version. It was never published to crates.io: 0.2.0 is the first
+`lager-net` release there.
+
+### Added
+
+- **`LagerBox` and `AsyncLagerBox`**, blocking (`ureq`) and async (`reqwest`)
+  clients of the box's HTTP API on port 9000, sharing one wire layer.
+- **Net types:** power supplies, batteries, e-loads, solar simulators, GPIO,
+  ADC, DAC, thermocouples, watt and energy meters, SPI, I2C, USB hub ports,
+  robot arms, webcams, routers, and streaming UART (`uart` feature).
+- **Debug-probe nets** (flash, erase, reset, memory reads, RTT) through the
+  box's debug service on port 8765.
+- **Box-level capabilities:** the box's BLE adapter, WiFi interface, and BluFi
+  ESP32 provisioning.
