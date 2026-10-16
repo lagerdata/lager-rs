@@ -51,7 +51,13 @@ pub(crate) mod ops {
 
     fn write(name: &str, action: &str, value: f64) -> Op<f64> {
         Op {
-            req: net_command(name, ROLE, action, json!({ "value": value }), read_timeout()),
+            req: net_command(
+                name,
+                ROLE,
+                action,
+                json!({ "value": value }),
+                read_timeout(),
+            ),
             parse: value_f64,
         }
     }

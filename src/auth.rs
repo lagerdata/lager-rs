@@ -180,9 +180,7 @@ fn apply_refresh(store: &mut Value, auth_url: &str, outcome: &RefreshOutcome) {
     if let Some(entry) = entry.as_object_mut() {
         entry.insert("accessToken".into(), json!(outcome.access_token));
         // Replay-safe: merge rotated cookies over the existing ones.
-        let cookies = entry
-            .entry("cookies")
-            .or_insert_with(|| json!({}));
+        let cookies = entry.entry("cookies").or_insert_with(|| json!({}));
         if let Some(cookies) = cookies.as_object_mut() {
             for (name, value) in &outcome.set_cookies {
                 cookies.insert(name.clone(), json!(value));
@@ -353,9 +351,7 @@ impl GatewayAuth {
     /// The stored entry for an auth server: `(accessToken, cookies)`.
     fn store_entry(&self, auth_url: &str) -> (Option<String>, Map<String, Value>) {
         let store = load_store();
-        let entry = store
-            .get("authServers")
-            .and_then(|s| s.get(auth_url));
+        let entry = store.get("authServers").and_then(|s| s.get(auth_url));
         let token = entry
             .and_then(|e| e.get("accessToken"))
             .and_then(Value::as_str)
@@ -385,10 +381,7 @@ fn host_of(base_url: &str) -> &str {
 /// Decide whether the stored token can be used directly, and with what
 /// cookies a refresh should be attempted otherwise. `avoid` is a token that
 /// was just rejected by the gateway and must not be returned again.
-fn usable_or_refresh(
-    stored: Option<String>,
-    avoid: Option<&str>,
-) -> (Option<String>, bool) {
+fn usable_or_refresh(stored: Option<String>, avoid: Option<&str>) -> (Option<String>, bool) {
     match stored {
         Some(token) if Some(token.as_str()) != avoid && token_is_fresh(&token) => {
             (Some(token), false)
@@ -567,7 +560,10 @@ mod tests {
     #[test]
     fn host_extraction() {
         assert_eq!(host_of("http://192.168.1.42:9000"), "192.168.1.42");
-        assert_eq!(host_of("http://box.tailnet.ts.net:9000"), "box.tailnet.ts.net");
+        assert_eq!(
+            host_of("http://box.tailnet.ts.net:9000"),
+            "box.tailnet.ts.net"
+        );
         assert_eq!(host_of("box:9000"), "box");
     }
 

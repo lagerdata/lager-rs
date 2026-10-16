@@ -136,7 +136,13 @@ pub(crate) mod ops {
             None => Timeout::Unbounded,
         };
         Op {
-            req: net_command(name, ROLE, "wait_for_level", wait_params(level, opts), timeout),
+            req: net_command(
+                name,
+                ROLE,
+                "wait_for_level",
+                wait_params(level, opts),
+                timeout,
+            ),
             parse: crate::wire::value_f64,
         }
     }

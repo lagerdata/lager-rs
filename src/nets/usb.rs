@@ -28,9 +28,7 @@ pub(crate) mod ops {
             Error::Box {
                 status: 400,
                 ref message,
-            } if message.contains("(enable|disable|toggle)")
-                && !message.contains("state") =>
-            {
+            } if message.contains("(enable|disable|toggle)") && !message.contains("state") => {
                 Error::UnsupportedByBox {
                     message: "the 'state' action on /usb/command requires box software \
                               >= 0.29.0; update the box or use toggle/enable/disable"
@@ -143,7 +141,9 @@ impl UsbPort<'_> {
     /// Requires box software >= 0.29.0; older boxes fail with
     /// [`crate::Error::UnsupportedByBox`].
     pub fn state(&self) -> crate::error::Result<bool> {
-        self.client.run(ops::state(&self.name)).map_err(ops::state_compat)
+        self.client
+            .run(ops::state(&self.name))
+            .map_err(ops::state_compat)
     }
 
     /// Power-cycle the port — off, wait, on — with the box's default off

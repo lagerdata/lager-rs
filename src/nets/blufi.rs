@@ -7,7 +7,9 @@
 //! joining WiFi) routinely takes 30 s+.
 
 use super::box_handle;
-pub use crate::wire::{BleDevice, BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus};
+pub use crate::wire::{
+    BleDevice, BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus,
+};
 
 pub(crate) mod ops {
     use std::time::Duration;

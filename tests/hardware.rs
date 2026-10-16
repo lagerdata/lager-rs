@@ -69,7 +69,10 @@ fn supply_cycle() {
     supply.enable().unwrap();
     let state = supply.state().unwrap();
     assert_eq!(state.enabled, Some(true));
-    assert!(state.voltage_set.map(|v| (v - 3.3).abs() < 0.05).unwrap_or(false));
+    assert!(state
+        .voltage_set
+        .map(|v| (v - 3.3).abs() < 0.05)
+        .unwrap_or(false));
     supply.disable().unwrap();
     let state = supply.state().unwrap();
     assert_eq!(state.enabled, Some(false));
@@ -140,7 +143,10 @@ fn debug_status_and_info() {
     );
 
     let status = debug.status().unwrap();
-    eprintln!("{name}: connected={} pid={:?}", status.connected, status.pid);
+    eprintln!(
+        "{name}: connected={} pid={:?}",
+        status.connected, status.pid
+    );
 }
 
 #[test]

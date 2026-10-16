@@ -11,7 +11,13 @@ pub(crate) mod ops {
 
     pub(crate) fn set(name: &str, volts: f64) -> Op<()> {
         Op {
-            req: net_command(name, ROLE, "set", json!({ "value": volts }), Timeout::Default),
+            req: net_command(
+                name,
+                ROLE,
+                "set",
+                json!({ "value": volts }),
+                Timeout::Default,
+            ),
             parse: unit,
         }
     }

@@ -227,7 +227,8 @@ impl LagerBox {
         };
         self.auth.learn_auth_server(&auth_url);
         let fresh = if status == 401 && !self.auth.has_static_token() {
-            self.auth.resolve_token_blocking(&auth_url, token.as_deref())
+            self.auth
+                .resolve_token_blocking(&auth_url, token.as_deref())
         } else {
             None
         };
@@ -396,8 +397,7 @@ impl LagerBox {
                 .auth
                 .resolve_token_blocking(&auth_url, token.as_deref())
             {
-                let (status, gateway, resp_body) =
-                    self.send_once(base, req, Some(&fresh))?;
+                let (status, gateway, resp_body) = self.send_once(base, req, Some(&fresh))?;
                 let Some(auth_url) = gateway else {
                     return Ok((status, resp_body));
                 };
@@ -483,9 +483,7 @@ impl LagerBox {
         };
         let body: Value = match resp.into_json() {
             Ok(body) => body,
-            Err(e) if status < 400 => {
-                return Err(Error::Decode(format!("non-JSON response: {e}")))
-            }
+            Err(e) if status < 400 => return Err(Error::Decode(format!("non-JSON response: {e}"))),
             // Error responses (incl. gateway denials) may have no JSON body.
             Err(_) => Value::Null,
         };
@@ -718,7 +716,11 @@ impl LagerBox {
     pub fn lock_guard(&self, user: impl Into<String>) -> Result<BoxLockGuard<'_>> {
         let user = user.into();
         self.lock(&user)?;
-        Ok(BoxLockGuard { client: self, user, released: false })
+        Ok(BoxLockGuard {
+            client: self,
+            user,
+            released: false,
+        })
     }
 
     // -- per-net safety limits ------------------------------------------------
@@ -785,82 +787,130 @@ impl LagerBox {
 
     /// Handle for a power-supply net.
     pub fn supply(&self, name: impl Into<String>) -> Supply<'_> {
-        Supply { client: self, name: name.into() }
+        Supply {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a battery-simulator net.
     pub fn battery(&self, name: impl Into<String>) -> Battery<'_> {
-        Battery { client: self, name: name.into() }
+        Battery {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for an electronic-load net.
     pub fn eload(&self, name: impl Into<String>) -> Eload<'_> {
-        Eload { client: self, name: name.into() }
+        Eload {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a solar-simulator net (EA PSB photovoltaic mode).
     pub fn solar(&self, name: impl Into<String>) -> Solar<'_> {
-        Solar { client: self, name: name.into() }
+        Solar {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a GPIO net.
     pub fn gpio(&self, name: impl Into<String>) -> Gpio<'_> {
-        Gpio { client: self, name: name.into() }
+        Gpio {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for an ADC net.
     pub fn adc(&self, name: impl Into<String>) -> Adc<'_> {
-        Adc { client: self, name: name.into() }
+        Adc {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a DAC net.
     pub fn dac(&self, name: impl Into<String>) -> Dac<'_> {
-        Dac { client: self, name: name.into() }
+        Dac {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a thermocouple net.
     pub fn thermocouple(&self, name: impl Into<String>) -> Thermocouple<'_> {
-        Thermocouple { client: self, name: name.into() }
+        Thermocouple {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a watt-meter net.
     pub fn watt_meter(&self, name: impl Into<String>) -> WattMeter<'_> {
-        WattMeter { client: self, name: name.into() }
+        WattMeter {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for an energy-analyzer net.
     pub fn energy_analyzer(&self, name: impl Into<String>) -> EnergyAnalyzer<'_> {
-        EnergyAnalyzer { client: self, name: name.into() }
+        EnergyAnalyzer {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for an SPI bus net.
     pub fn spi(&self, name: impl Into<String>) -> Spi<'_> {
-        Spi { client: self, name: name.into() }
+        Spi {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for an I2C bus net.
     pub fn i2c(&self, name: impl Into<String>) -> I2c<'_> {
-        I2c { client: self, name: name.into() }
+        I2c {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a USB hub port net.
     pub fn usb(&self, name: impl Into<String>) -> UsbPort<'_> {
-        UsbPort { client: self, name: name.into() }
+        UsbPort {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a robot-arm net (Rotrics Dexarm).
     pub fn arm(&self, name: impl Into<String>) -> Arm<'_> {
-        Arm { client: self, name: name.into() }
+        Arm {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a webcam net (MJPEG streaming).
     pub fn webcam(&self, name: impl Into<String>) -> Webcam<'_> {
-        Webcam { client: self, name: name.into() }
+        Webcam {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for a router net (MikroTik RouterOS).
     pub fn router(&self, name: impl Into<String>) -> Router<'_> {
-        Router { client: self, name: name.into() }
+        Router {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Handle for the box's BLE adapter (box-level, not a saved net).
@@ -886,7 +936,11 @@ impl LagerBox {
     /// Handle for a debug-probe net (flash/erase/reset/read_memory/RTT).
     /// Talks to the box debug service on port 8765.
     pub fn debug(&self, name: impl Into<String>) -> DebugNet<'_> {
-        DebugNet { client: self, name: name.into(), record: Default::default() }
+        DebugNet {
+            client: self,
+            name: name.into(),
+            record: Default::default(),
+        }
     }
 
     /// Handle for an oscilloscope net. **Stub:** see [`Scope`].

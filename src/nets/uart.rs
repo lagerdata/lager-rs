@@ -152,7 +152,9 @@ impl Uart {
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(Error::Stream("UART session closed unexpectedly".to_string()))
+                    return Err(Error::Stream(
+                        "UART session closed unexpectedly".to_string(),
+                    ))
                 }
             }
         }
@@ -213,7 +215,9 @@ impl Uart {
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => return Ok(()),
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(Error::Stream("UART session closed unexpectedly".to_string()))
+                    return Err(Error::Stream(
+                        "UART session closed unexpectedly".to_string(),
+                    ))
                 }
             }
         }
@@ -252,11 +256,7 @@ impl Uart {
         }
         let deadline = Instant::now() + timeout;
         loop {
-            if let Some(pos) = self
-                .buf
-                .windows(needle.len())
-                .position(|w| w == needle)
-            {
+            if let Some(pos) = self.buf.windows(needle.len()).position(|w| w == needle) {
                 let mut rest = self.buf.split_off(pos + needle.len());
                 std::mem::swap(&mut self.buf, &mut rest);
                 return Ok(rest);
@@ -292,4 +292,3 @@ impl Drop for Uart {
         self.shutdown();
     }
 }
-
