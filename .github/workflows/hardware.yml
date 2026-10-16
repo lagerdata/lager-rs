@@ -1,0 +1,208 @@
+# tests/hardware.rs against a real Lager box, on the self-hosted bench runner.
+#
+# Never triggered by pull_request. This repo is public and the runner sits on
+# a bench with live instruments, so a fork PR must not be able to run its own
+# code there. Runs are nightly on main and on manual dispatch only.
+#
+# The box address and net names come from repository variables, not this
+# file. tests/hardware.rs skips a net test whose variable is unset and still
+# reports it as passed, so a run with nothing configured would be all green
+# and test nothing. The first step therefore fails unless every net listed in
+# REQUIRED_NETS is set.
+#
+# Sharing the bench with lagerdata/lager's hardware workflows:
+# - The box lock is the only thing both repositories see; a concurrency group
+#   cannot span repositories. This job takes it before touching an instrument
+#   and releases it at the end. lager's CLI-driven runs wait on it. The lock
+#   is enforced by the lager CLI, not by the box, so it orders the two
+#   repositories' runs but does not stop anything that ignores it.
+# - The lock carries a TTL longer than this job's timeout, so a run that dies
+#   without releasing it cannot hold the bench past that.
+# - LAGER_USER names this job's holder. Both runners on the bench host run as
+#   the same OS user, and without it lager's runs would read this lock as
+#   their own.
+# - The bench is dark between runs: the instruments sit on AC relays. Power
+#   on uses lager's own bench-power-on action, so both repositories bring the
+#   bench up the same way; power off is ours, best effort.
+#
+# The nightly slot is offset from lagerdata/lager's Nightly Bench (10:17 UTC).
+
+name: Hardware
+
+on:
+  schedule:
+    - cron: "47 12 * * *"
+  workflow_dispatch:
+    inputs:
+      flash:
+        description: "Also run debug_flash_reset_read (DESTRUCTIVE: erases and reflashes the DUT)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hardware
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  LAGER_BOX_HOST: ${{ vars.LAGER_BOX_HOST }}
+  LAGER_TEST_SUPPLY_NET: ${{ vars.LAGER_TEST_SUPPLY_NET }}
+  LAGER_TEST_ADC_NET: ${{ vars.LAGER_TEST_ADC_NET }}
+  LAGER_TEST_GPIO_NET: ${{ vars.LAGER_TEST_GPIO_NET }}
+  LAGER_TEST_DEBUG_NET: ${{ vars.LAGER_TEST_DEBUG_NET }}
+  LAGER_TEST_SOLAR_NET: ${{ vars.LAGER_TEST_SOLAR_NET }}
+  LAGER_TEST_FIRMWARE: ${{ vars.LAGER_TEST_FIRMWARE }}
+  LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+  LAGER_USER: lager-rs-ci
+  RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+  KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+  REQUIRED_NETS: LAGER_TEST_SUPPLY_NET LAGER_TEST_ADC_NET LAGER_TEST_GPIO_NET LAGER_TEST_DEBUG_NET
+  # Longer than timeout-minutes below.
+  LOCK_TTL_SECONDS: "2400"
+
+jobs:
+  hardware:
+    name: hardware
+    runs-on: [self-hosted, lager-rs-bench]
+    timeout-minutes: 30
+    steps:
+      - name: Bench configuration is complete
+        run: |
+          missing=0
+          for var in LAGER_BOX_HOST LAGER_GATEWAY_TOKEN $REQUIRED_NETS; do
+            if [ -z "${!var}" ]; then
+              echo "::error::$var is not set"
+              missing=1
+            fi
+          done
+          if [ "${{ inputs.flash }}" = true ] && [ -z "$LAGER_TEST_FIRMWARE" ]; then
+            echo "::error::flash requested but LAGER_TEST_FIRMWARE is not set"
+            missing=1
+          fi
+          exit $missing
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+
+      # Compile before taking the lock, so the bench is held only while tests run.
+      - name: Build hardware tests
+        run: cargo test --locked --test hardware --no-run
+
+      # The lager CLI drives the power relays. It lives in a venv under
+      # RUNNER_TEMP, so nothing is installed on the bench host itself.
+      - name: Install lager CLI
+        run: |
+          python3 -m venv "$RUNNER_TEMP/lager-venv"
+          "$RUNNER_TEMP/lager-venv/bin/pip" install --quiet lager-cli
+          echo "$RUNNER_TEMP/lager-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/lager-venv/bin/pip" show lager-cli | grep '^Version'
+
+      # Waits, for up to 20 minutes, while lagerdata/lager has a job on the
+      # bench or another holder has the lock (a 409 names it). lager's runs
+      # lock per step, not per run, so the lock alone has gaps mid-run; the
+      # job check closes them. That repository is public, so the job token can
+      # read its runs.
+      - name: Lock the box
+        id: lock
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          lager_bench_busy() {
+            curl -sS -m 10 -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/lagerdata/lager/actions/runs?status=in_progress&per_page=50" \
+            | python3 -c '
+          import json, sys, urllib.request, os
+          runs = json.load(sys.stdin).get("workflow_runs", [])
+          for run in runs:
+              req = urllib.request.Request(run["jobs_url"],
+                  headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"]})
+              jobs = json.load(urllib.request.urlopen(req, timeout=10)).get("jobs", [])
+              for job in jobs:
+                  if job["status"] == "in_progress" and "lager-bench" in job.get("labels", []):
+                      print(run["name"] + " / " + job["name"])
+                      sys.exit(0)
+          sys.exit(1)'
+          }
+          body=$(printf '{"user":"%s","holder_type":"ci","ttl_seconds":%s}' \
+            "$LAGER_USER" "$LOCK_TTL_SECONDS")
+          for attempt in $(seq 1 40); do
+            if busy=$(lager_bench_busy); then
+              echo "attempt $attempt: lagerdata/lager is on the bench: $busy"
+              sleep 30
+              continue
+            fi
+            code=$(curl -sS -o lock.json -w '%{http_code}' -m 10 \
+              -H "Authorization: Bearer $LAGER_GATEWAY_TOKEN" \
+              -H 'Content-Type: application/json' \
+              -d "$body" "http://$LAGER_BOX_HOST:9000/lock" || echo 000)
+            if [ "$code" = 200 ]; then
+              echo "locked as $LAGER_USER (ttl ${LOCK_TTL_SECONDS}s)"
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP $code $(cat lock.json 2>/dev/null)"
+            case "$code" in
+              401|403) echo "::error::the box refused the gateway token"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          echo "::error::could not lock the box within 20 minutes"
+          exit 1
+
+      - name: Power on bench instruments
+        uses: lagerdata/lager/.github/actions/bench-power-on@42a0e60f2cc17c4a3602b9541ff2467631c598f8 # main 2026-10-16
+        with:
+          box: ${{ env.LAGER_BOX_HOST }}
+          rigol-power-net: ${{ env.RIGOL_POWER_NET }}
+          keithley-power-net: ${{ env.KEITHLEY_POWER_NET }}
+          probe-supply-net: ${{ env.LAGER_TEST_SUPPLY_NET }}
+          keithley-present: ${{ vars.KEITHLEY_PRESENT }}
+
+      # --test-threads=1: tests share instruments, and the crate serialises
+      # per-net I/O but not whole test bodies.
+      # wifi_status_and_scan is skipped on every run: it scans on wlan0, and
+      # the bench box reaches the network over that interface.
+      - name: Hardware tests
+        run: |
+          skip=(--skip wifi_status_and_scan --skip debug_flash_reset_read)
+          if [ "${{ inputs.flash }}" = true ]; then skip=(--skip wifi_status_and_scan); fi
+          cargo test --locked --test hardware -- --ignored --test-threads=1 --nocapture "${skip[@]}" \
+            2>&1 | tee hardware.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Report skipped nets
+        if: always()
+        run: |
+          if grep -q '^skipping:' hardware.log 2>/dev/null; then
+            grep '^skipping:' hardware.log | sed 's/^/::notice::/'
+          fi
+
+      # Best effort, bounded per net: a failure here warns and leaves the run's
+      # verdict to the tests. Runs only if this job holds the lock, so it never
+      # cuts power under another holder's run.
+      - name: Power off bench instruments
+        if: always() && steps.lock.outcome == 'success'
+        continue-on-error: true
+        run: |
+          for net in "$RIGOL_POWER_NET" "$KEITHLEY_POWER_NET"; do
+            timeout 60 lager gpo "$net" low --box "$LAGER_BOX_HOST" \
+              || echo "::warning::could not drive $net low; the bench may be left powered"
+          done
+
+      - name: Unlock the box
+        if: always() && steps.lock.outcome == 'success'
+        run: |
+          code=$(curl -sS -o unlock.json -w '%{http_code}' -m 10 \
+            -H "Authorization: Bearer $LAGER_GATEWAY_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "{\"user\":\"$LAGER_USER\",\"force\":false}" \
+            "http://$LAGER_BOX_HOST:9000/unlock" || echo 000)
+          if [ "$code" != 200 ]; then
+            echo "::warning::unlock returned HTTP $code $(cat unlock.json 2>/dev/null); the lock expires after ${LOCK_TTL_SECONDS}s"
+          fi
