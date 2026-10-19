@@ -4,6 +4,12 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **The `async` feature now uses `reqwest` 0.13** (was 0.12). The async
+  client's API is unchanged: no `reqwest` type appears in it. A project that
+  also depends on `reqwest` 0.12 directly now builds both versions.
+
 ## [0.7.0] - 2026-10-15
 
 ### Changed
