@@ -10,6 +10,7 @@ pub mod arm;
 pub mod battery;
 pub mod ble;
 pub mod blufi;
+pub mod custom;
 pub mod dac;
 pub mod debug;
 pub mod dfu;

@@ -2,6 +2,49 @@
 
 use super::net_handle;
 
+/// What a [`UsbPort::cycle_report`] saw, as the box classifies it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UsbCycleOutcome {
+    /// The device re-enumerated after power returned.
+    Reconnected,
+    /// The device did not come back before the box's timeout.
+    NotReconnected,
+    /// Nothing on this port was on the USB bus when the cycle started, so
+    /// re-enumeration could not be confirmed.
+    NoDevice,
+    /// The box could not read its USB topology, so it could not watch for
+    /// the device.
+    TopologyUnreadable,
+    /// An outcome this crate version does not know yet.
+    Other(String),
+}
+
+impl UsbCycleOutcome {
+    fn parse(s: &str) -> Self {
+        match s {
+            "reconnected" => UsbCycleOutcome::Reconnected,
+            "not_reconnected" => UsbCycleOutcome::NotReconnected,
+            "no_device" => UsbCycleOutcome::NoDevice,
+            "topology_unreadable" => UsbCycleOutcome::TopologyUnreadable,
+            other => UsbCycleOutcome::Other(other.to_string()),
+        }
+    }
+}
+
+/// The full result of a power cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct UsbCycleReport {
+    /// Same as [`UsbPort::cycle`]'s return value.
+    pub reconnected: Option<bool>,
+    /// Which of the four results it was (box >= 0.49.0; `None` before).
+    /// Tells apart the two cases `reconnected: None` covers.
+    pub outcome: Option<UsbCycleOutcome>,
+    /// The box's message.
+    pub message: Option<String>,
+}
+
 pub(crate) mod ops {
     use serde_json::Value;
 
@@ -108,6 +151,27 @@ pub(crate) mod ops {
         }
     }
 
+    fn parse_cycle_report(resp: CommandResponse) -> Result<super::UsbCycleReport> {
+        let outcome = resp
+            .extra
+            .get("outcome")
+            .and_then(Value::as_str)
+            .map(super::UsbCycleOutcome::parse);
+        let message = resp.message.clone();
+        Ok(super::UsbCycleReport {
+            reconnected: parse_reconnected(resp)?,
+            outcome,
+            message,
+        })
+    }
+
+    pub(crate) fn cycle_report(name: &str, off_time: Option<f64>) -> Op<super::UsbCycleReport> {
+        Op {
+            req: crate::wire::usb_cycle(name, off_time),
+            parse: parse_cycle_report,
+        }
+    }
+
     pub(crate) fn recover(name: &str) -> Op<()> {
         Op {
             req: usb_command(name, "recover"),
@@ -180,6 +244,18 @@ impl UsbPort<'_> {
             .map_err(ops::cycle_compat)
     }
 
+    /// Like [`UsbPort::cycle`] (or [`UsbPort::cycle_with_off_time`] when
+    /// `off_time_secs` is given), returning the box's classification of the
+    /// result as well: [`UsbCycleReport::outcome`] tells "nothing was on the
+    /// port" apart from "the box could not watch".
+    ///
+    /// Requires box software >= 0.39.0, and >= 0.49.0 for `outcome`.
+    pub fn cycle_report(&self, off_time_secs: Option<f64>) -> crate::error::Result<UsbCycleReport> {
+        self.client
+            .run(ops::cycle_report(&self.name, off_time_secs))
+            .map_err(ops::cycle_compat)
+    }
+
     /// Re-power a port left dark by an interrupted command. On a Plugable
     /// dock this re-asserts power on every port of that dock — the
     /// situation it exists for is "something died partway through and it is
@@ -228,6 +304,17 @@ impl AsyncUsbPort<'_> {
     ) -> crate::error::Result<Option<bool>> {
         self.client
             .run(ops::cycle(&self.name, Some(off_time_secs)))
+            .await
+            .map_err(ops::cycle_compat)
+    }
+
+    /// See [`UsbPort::cycle_report`].
+    pub async fn cycle_report(
+        &self,
+        off_time_secs: Option<f64>,
+    ) -> crate::error::Result<UsbCycleReport> {
+        self.client
+            .run(ops::cycle_report(&self.name, off_time_secs))
             .await
             .map_err(ops::cycle_compat)
     }

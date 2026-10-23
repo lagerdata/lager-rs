@@ -12,6 +12,7 @@ use crate::nets::arm::Arm;
 use crate::nets::battery::Battery;
 use crate::nets::ble::Ble;
 use crate::nets::blufi::Blufi;
+use crate::nets::custom::CustomNet;
 use crate::nets::dac::Dac;
 use crate::nets::debug::DebugNet;
 use crate::nets::dfu::Dfu;
@@ -915,6 +916,15 @@ impl LagerBox {
     /// Handle for a webcam net (MJPEG streaming).
     pub fn webcam(&self, name: impl Into<String>) -> Webcam<'_> {
         Webcam {
+            client: self,
+            name: name.into(),
+        }
+    }
+
+    /// Handle for a net driven by a custom driver installed on the box
+    /// (box >= 0.59.0). See [`crate::nets::custom`].
+    pub fn custom(&self, name: impl Into<String>) -> CustomNet<'_> {
+        CustomNet {
             client: self,
             name: name.into(),
         }
