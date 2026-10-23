@@ -2533,4 +2533,76 @@ mod async_parity {
         assert_eq!(applied.max_current, Some(1.5));
         m.assert_async().await;
     }
+
+    /// An async client whose :9000 and debug (:8765) traffic both hit
+    /// `server`, with one debug net saved.
+    async fn async_debug_client(server: &MockServer) -> AsyncLagerBox {
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/nets/list");
+                then.status(200).json_body(json!([{
+                    "name": "debug1", "role": "debug", "pin": "nrf52840_xxaa",
+                    "instrument": "jlink1", "address": "jlink://000440012345"
+                }]));
+            })
+            .await;
+        AsyncLagerBox::builder(server.address().to_string())
+            .debug_service_url(server.base_url())
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn async_erase_range_never_erases_on_a_box_without_the_feature() {
+        let server = MockServer::start_async().await;
+        let lager = async_debug_client(&server).await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/health");
+                then.status(200)
+                    .json_body(json!({"status": "healthy", "version": "1.0.0"}));
+            })
+            .await;
+        let erase = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/debug/erase");
+                then.status(200)
+                    .json_body(json!({"status": "erase_complete"}));
+            })
+            .await;
+        let err = lager
+            .debug("debug1")
+            .erase_range(0, 0x1000)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::UnsupportedByBox { .. }), "{err:?}");
+        erase.assert_hits_async(0).await;
+    }
+
+    #[tokio::test]
+    async fn async_flash_that_programmed_nothing_is_an_error() {
+        let server = MockServer::start_async().await;
+        let lager = async_debug_client(&server).await;
+        server
+            .mock_async(|when, then| {
+                when.method(POST).path("/debug/flash");
+                then.status(200).json_body(json!({
+                    "status": "flash_complete",
+                    "output": ["Downloading file [fw.hex]..."],
+                    "programmed": false,
+                    "error": "J-Link printed `Downloading file` but no `Flash download` \
+                              line after it: nothing was programmed"
+                }));
+            })
+            .await;
+        let err = lager
+            .debug("debug1")
+            .flash_bytes(b"foobar", lager::FirmwareKind::Hex, None)
+            .await
+            .unwrap_err();
+        match err {
+            Error::FlashFailed { error, .. } => assert!(error.contains("nothing was programmed")),
+            other => panic!("expected Error::FlashFailed, got {other:?}"),
+        }
+    }
 }

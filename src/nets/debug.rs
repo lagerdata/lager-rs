@@ -33,7 +33,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
-use crate::wire::{self, DebugConnection, DebugInfo, DebugStatus, Timeout};
+use crate::wire::{
+    self, DebugConnection, DebugInfo, DebugStatus, EraseReport, FlashReport, Timeout,
+};
 
 /// Base64-encode bytes with the standard alphabet (with padding). Kept
 /// in-crate so firmware upload adds no extra dependency (also used by
@@ -103,10 +105,9 @@ pub struct ConnectOptions {
     /// Halt the target on connect. This is reset-then-halt (the box runs
     /// OpenOCD's `reset halt` / J-Link's halting connect), which pulses
     /// nRESET and re-enters through the reset vector — on a part executing
-    /// in place out of QSPI that re-runs the bootloader. There is no
-    /// halt-in-place over the debug service's HTTP API today; on J-Link a
-    /// halt-first script via [`ConnectOptions::jlink_script`] is the
-    /// supported route. Honored on the OpenOCD backend by box >= 0.43.0
+    /// in place out of QSPI that re-runs the bootloader. On J-Link a
+    /// halt-first script via [`ConnectOptions::jlink_script`] halts without
+    /// a reset. Honored on the OpenOCD backend by box >= 0.43.0
     /// (older boxes pinned it to `false` on that backend; J-Link always
     /// honored it).
     pub halt: bool,
@@ -123,6 +124,15 @@ pub struct ConnectOptions {
     /// a cfg has selected the ftdi adapter first. Takes precedence over a
     /// config saved on the net.
     pub openocd_config: Option<Vec<u8>>,
+    /// GDB protocol port for this connection, in place of the probe slot's
+    /// default (box >= 0.45.0 range-checks it; 400 when out of range).
+    pub gdb_port: Option<u16>,
+    /// SWO output port (J-Link only).
+    pub swo_port: Option<u16>,
+    /// Telnet I/O port (J-Link only).
+    pub telnet_port: Option<u16>,
+    /// RTT telnet port.
+    pub rtt_telnet_port: Option<u16>,
 }
 
 impl Default for ConnectOptions {
@@ -134,6 +144,10 @@ impl Default for ConnectOptions {
             gdb: true,
             jlink_script: None,
             openocd_config: None,
+            gdb_port: None,
+            swo_port: None,
+            telnet_port: None,
+            rtt_telnet_port: None,
         }
     }
 }
@@ -155,8 +169,7 @@ pub struct RttOptions {
     pub search_addr: Option<u64>,
     /// Size of the RAM region to search, in bytes (advanced).
     pub search_size: Option<u64>,
-    /// Read chunk size on the box side (J-Link only, advanced). Only used
-    /// by interactive RTT; the one-way HTTP stream ignores it.
+    /// Read chunk size on the box side (J-Link only, advanced).
     pub chunk_size: Option<u64>,
 }
 
@@ -190,6 +203,16 @@ pub(crate) mod ops {
         if let Some(cfg) = &opts.openocd_config {
             extra["openocd_config"] = json!(base64_encode(cfg));
         }
+        for (key, port) in [
+            ("gdb_port", opts.gdb_port),
+            ("swo_port", opts.swo_port),
+            ("telnet_port", opts.telnet_port),
+            ("rtt_telnet_port", opts.rtt_telnet_port),
+        ] {
+            if let Some(port) = port {
+                extra[key] = json!(port);
+            }
+        }
         (
             "/debug/connect".into(),
             debug_body(net, extra),
@@ -221,30 +244,50 @@ pub(crate) mod ops {
         )
     }
 
+    /// Erase only `size` bytes from `start` (box >= 0.50.0, which lists
+    /// `erase_range` in its `/health` features; an older box ignores the
+    /// fields and erases the whole chip, so callers check first).
+    pub(crate) fn erase_range(net: &Value, start: u64, size: u64) -> (String, Value, Timeout) {
+        (
+            "/debug/erase".into(),
+            debug_body(net, json!({ "erase_start": start, "erase_size": size })),
+            ERASE_TIMEOUT,
+        )
+    }
+
     pub(crate) fn read_memory(
         net: &Value,
         address: u64,
         length: usize,
+        no_reset: bool,
     ) -> (String, Value, Timeout) {
-        (
-            "/debug/memrd".into(),
-            debug_body(net, json!({ "start_addr": address, "length": length })),
-            MEMRD_TIMEOUT,
-        )
+        let mut extra = json!({ "start_addr": address, "length": length });
+        if no_reset {
+            extra["no_reset"] = json!(true);
+        }
+        ("/debug/memrd".into(), debug_body(net, extra), MEMRD_TIMEOUT)
     }
 
-    pub(crate) fn info(net: &Value) -> (String, Value, Timeout) {
-        (
-            "/debug/info".into(),
-            debug_body(net, json!({})),
-            QUICK_TIMEOUT,
-        )
+    /// `probe` asks the box to read the target to settle `target_attached`
+    /// (box >= 0.44.0; about a second slower).
+    pub(crate) fn info(net: &Value, probe: bool) -> (String, Value, Timeout) {
+        let extra = if probe {
+            json!({ "probe": true })
+        } else {
+            json!({})
+        };
+        ("/debug/info".into(), debug_body(net, extra), QUICK_TIMEOUT)
     }
 
-    pub(crate) fn status(net: &Value) -> (String, Value, Timeout) {
+    pub(crate) fn status(net: &Value, probe: bool) -> (String, Value, Timeout) {
+        let extra = if probe {
+            json!({ "probe": true })
+        } else {
+            json!({})
+        };
         (
             "/debug/status".into(),
-            debug_body(net, json!({})),
+            debug_body(net, extra),
             QUICK_TIMEOUT,
         )
     }
@@ -282,6 +325,9 @@ pub(crate) mod ops {
         }
         if let Some(s) = opts.search_size {
             extra["search_size"] = json!(s);
+        }
+        if let Some(c) = opts.chunk_size {
+            extra["chunk_size"] = json!(c);
         }
         debug_body(net, extra)
     }
@@ -393,24 +439,45 @@ impl DebugNet<'_> {
         self.call(&path, body, timeout).map(|_| ())
     }
 
-    /// Mass-erase the target flash.
-    pub fn erase(&self) -> Result<()> {
+    /// Erase the target flash: the whole chip, or the part family's default
+    /// range on parts where the box defines one (DA1469x, nRF5340). The
+    /// report says which range was erased (box >= 0.50.0).
+    pub fn erase(&self) -> Result<EraseReport> {
         let net = self.net_record()?;
         let (path, body, timeout) = ops::erase(&net);
-        self.call(&path, body, timeout).map(|_| ())
+        let resp = self.call(&path, body, timeout)?;
+        serde_json::from_value(resp).map_err(Into::into)
+    }
+
+    /// Erase only `size` bytes of flash starting at `start` (box >= 0.50.0).
+    ///
+    /// Checks the debug service's features first and fails with
+    /// [`Error::UnsupportedByBox`] on an older box, which would ignore the
+    /// range and erase the whole chip. The box refuses (HTTP 400) a range
+    /// outside what it can erase on the part.
+    pub fn erase_range(&self, start: u64, size: u64) -> Result<EraseReport> {
+        let (status, health) = self.client.execute_debug(&wire::debug_health_request())?;
+        wire::require_debug_feature(status, health, "erase_range", "0.50.0")?;
+        let net = self.net_record()?;
+        let (path, body, timeout) = ops::erase_range(&net, start, size);
+        let resp = self.call(&path, body, timeout)?;
+        serde_json::from_value(resp).map_err(Into::into)
     }
 
     /// Flash a firmware file, inferring the type from its extension
     /// (`.hex`, `.elf`, `.bin`). `.bin` is flashed at `0x08000000`; use
     /// [`DebugNet::flash_bin`] to choose the address.
-    pub fn flash(&self, firmware_path: impl AsRef<Path>) -> Result<()> {
+    ///
+    /// Fails with [`Error::FlashFailed`] when the box reports that nothing
+    /// was programmed (box >= 0.51.0).
+    pub fn flash(&self, firmware_path: impl AsRef<Path>) -> Result<FlashReport> {
         let path = firmware_path.as_ref();
         let (contents, kind) = read_firmware(path)?;
         self.flash_bytes(&contents, kind, None)
     }
 
     /// Flash a raw binary at an explicit base address.
-    pub fn flash_bin(&self, firmware_path: impl AsRef<Path>, address: u32) -> Result<()> {
+    pub fn flash_bin(&self, firmware_path: impl AsRef<Path>, address: u32) -> Result<FlashReport> {
         let contents = std::fs::read(firmware_path.as_ref())
             .map_err(|e| Error::Config(format!("cannot read firmware: {e}")))?;
         self.flash_bytes(&contents, FirmwareKind::Bin, Some(address))
@@ -422,32 +489,70 @@ impl DebugNet<'_> {
         contents: &[u8],
         kind: FirmwareKind,
         address: Option<u32>,
-    ) -> Result<()> {
+    ) -> Result<FlashReport> {
         let net = self.net_record()?;
         let (path, body, timeout) = ops::flash(&net, contents, kind, address);
-        self.call(&path, body, timeout).map(|_| ())
+        let resp = self.call(&path, body, timeout)?;
+        let report = wire::parse_flash(resp);
+        if report.is_err() {
+            *self.record.lock().unwrap() = None;
+        }
+        report
     }
 
     /// Read `length` bytes of target memory starting at `address`.
     pub fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
+        self.read_memory_inner(address, length, false)
+    }
+
+    /// Like [`DebugNet::read_memory`], but asks the box not to reset or halt
+    /// the target first (OpenOCD), so a running target keeps running.
+    pub fn read_memory_no_reset(&self, address: u64, length: usize) -> Result<Vec<u8>> {
+        self.read_memory_inner(address, length, true)
+    }
+
+    fn read_memory_inner(&self, address: u64, length: usize, no_reset: bool) -> Result<Vec<u8>> {
         let net = self.net_record()?;
-        let (path, body, timeout) = ops::read_memory(&net, address, length);
+        let (path, body, timeout) = ops::read_memory(&net, address, length, no_reset);
         let resp = self.call(&path, body, timeout)?;
         wire::debug_memory_bytes(&resp)
     }
 
-    /// Probe/target information (device, arch, backend, connected state).
+    /// Probe/target information (device, arch, backend, server state).
+    /// `target_attached` is `None` unless the box already knows the attach
+    /// failed; see [`DebugNet::info_probed`].
     pub fn info(&self) -> Result<DebugInfo> {
+        self.info_inner(false)
+    }
+
+    /// Like [`DebugNet::info`], but the box reads the target to settle
+    /// `target_attached` (box >= 0.44.0; about a second slower).
+    pub fn info_probed(&self) -> Result<DebugInfo> {
+        self.info_inner(true)
+    }
+
+    fn info_inner(&self, probe: bool) -> Result<DebugInfo> {
         let net = self.net_record()?;
-        let (path, body, timeout) = ops::info(&net);
+        let (path, body, timeout) = ops::info(&net, probe);
         let resp = self.call(&path, body, timeout)?;
         serde_json::from_value(resp).map_err(Into::into)
     }
 
-    /// Whether a gdbserver/daemon is currently running for this probe.
+    /// Whether a gdbserver/daemon is running for this probe, and whether
+    /// the target is known to be attached; see [`DebugNet::status_probed`].
     pub fn status(&self) -> Result<DebugStatus> {
+        self.status_inner(false)
+    }
+
+    /// Like [`DebugNet::status`], but the box reads the target to settle
+    /// `target_attached` (box >= 0.44.0; about a second slower).
+    pub fn status_probed(&self) -> Result<DebugStatus> {
+        self.status_inner(true)
+    }
+
+    fn status_inner(&self, probe: bool) -> Result<DebugStatus> {
         let net = self.net_record()?;
-        let (path, body, timeout) = ops::status(&net);
+        let (path, body, timeout) = ops::status(&net, probe);
         let resp = self.call(&path, body, timeout)?;
         serde_json::from_value(resp).map_err(Into::into)
     }
@@ -609,21 +714,40 @@ impl AsyncDebugNet<'_> {
         self.call(&path, body, timeout).await.map(|_| ())
     }
 
-    /// Mass-erase the target flash.
-    pub async fn erase(&self) -> Result<()> {
+    /// Erase the target flash. See [`DebugNet::erase`].
+    pub async fn erase(&self) -> Result<EraseReport> {
         let net = self.net_record().await?;
         let (path, body, timeout) = ops::erase(&net);
-        self.call(&path, body, timeout).await.map(|_| ())
+        let resp = self.call(&path, body, timeout).await?;
+        serde_json::from_value(resp).map_err(Into::into)
     }
 
-    /// Flash a firmware file, inferring type from extension.
-    pub async fn flash(&self, firmware_path: impl AsRef<Path>) -> Result<()> {
+    /// Erase only `size` bytes from `start`. See [`DebugNet::erase_range`].
+    pub async fn erase_range(&self, start: u64, size: u64) -> Result<EraseReport> {
+        let (status, health) = self
+            .client
+            .execute_debug(&wire::debug_health_request())
+            .await?;
+        wire::require_debug_feature(status, health, "erase_range", "0.50.0")?;
+        let net = self.net_record().await?;
+        let (path, body, timeout) = ops::erase_range(&net, start, size);
+        let resp = self.call(&path, body, timeout).await?;
+        serde_json::from_value(resp).map_err(Into::into)
+    }
+
+    /// Flash a firmware file, inferring type from extension. See
+    /// [`DebugNet::flash`].
+    pub async fn flash(&self, firmware_path: impl AsRef<Path>) -> Result<FlashReport> {
         let (contents, kind) = read_firmware(firmware_path.as_ref())?;
         self.flash_bytes(&contents, kind, None).await
     }
 
     /// Flash a raw binary at an explicit base address.
-    pub async fn flash_bin(&self, firmware_path: impl AsRef<Path>, address: u32) -> Result<()> {
+    pub async fn flash_bin(
+        &self,
+        firmware_path: impl AsRef<Path>,
+        address: u32,
+    ) -> Result<FlashReport> {
         let contents = std::fs::read(firmware_path.as_ref())
             .map_err(|e| Error::Config(format!("cannot read firmware: {e}")))?;
         self.flash_bytes(&contents, FirmwareKind::Bin, Some(address))
@@ -636,32 +760,69 @@ impl AsyncDebugNet<'_> {
         contents: &[u8],
         kind: FirmwareKind,
         address: Option<u32>,
-    ) -> Result<()> {
+    ) -> Result<FlashReport> {
         let net = self.net_record().await?;
         let (path, body, timeout) = ops::flash(&net, contents, kind, address);
-        self.call(&path, body, timeout).await.map(|_| ())
+        let resp = self.call(&path, body, timeout).await?;
+        let report = wire::parse_flash(resp);
+        if report.is_err() {
+            *self.record.lock().unwrap() = None;
+        }
+        report
     }
 
     /// Read `length` bytes of target memory starting at `address`.
     pub async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
+        self.read_memory_inner(address, length, false).await
+    }
+
+    /// See [`DebugNet::read_memory_no_reset`].
+    pub async fn read_memory_no_reset(&self, address: u64, length: usize) -> Result<Vec<u8>> {
+        self.read_memory_inner(address, length, true).await
+    }
+
+    async fn read_memory_inner(
+        &self,
+        address: u64,
+        length: usize,
+        no_reset: bool,
+    ) -> Result<Vec<u8>> {
         let net = self.net_record().await?;
-        let (path, body, timeout) = ops::read_memory(&net, address, length);
+        let (path, body, timeout) = ops::read_memory(&net, address, length, no_reset);
         let resp = self.call(&path, body, timeout).await?;
         wire::debug_memory_bytes(&resp)
     }
 
-    /// Probe/target information.
+    /// Probe/target information. See [`DebugNet::info`].
     pub async fn info(&self) -> Result<DebugInfo> {
+        self.info_inner(false).await
+    }
+
+    /// See [`DebugNet::info_probed`].
+    pub async fn info_probed(&self) -> Result<DebugInfo> {
+        self.info_inner(true).await
+    }
+
+    async fn info_inner(&self, probe: bool) -> Result<DebugInfo> {
         let net = self.net_record().await?;
-        let (path, body, timeout) = ops::info(&net);
+        let (path, body, timeout) = ops::info(&net, probe);
         let resp = self.call(&path, body, timeout).await?;
         serde_json::from_value(resp).map_err(Into::into)
     }
 
-    /// Whether a gdbserver/daemon is currently running for this probe.
+    /// See [`DebugNet::status`].
     pub async fn status(&self) -> Result<DebugStatus> {
+        self.status_inner(false).await
+    }
+
+    /// See [`DebugNet::status_probed`].
+    pub async fn status_probed(&self) -> Result<DebugStatus> {
+        self.status_inner(true).await
+    }
+
+    async fn status_inner(&self, probe: bool) -> Result<DebugStatus> {
         let net = self.net_record().await?;
-        let (path, body, timeout) = ops::status(&net);
+        let (path, body, timeout) = ops::status(&net, probe);
         let resp = self.call(&path, body, timeout).await?;
         serde_json::from_value(resp).map_err(Into::into)
     }
