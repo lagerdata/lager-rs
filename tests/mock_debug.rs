@@ -330,3 +330,337 @@ fn net_record_cache_is_invalidated_when_an_op_fails() {
     debug.status().unwrap(); // next op re-resolves it
     nets.assert_hits(2);
 }
+
+// ---------------------------------------------------------------------------
+// Box 0.44.0 - 0.59.0 catch-up. Response bodies are copied from the shapes
+// `box/lager/debug/service.py` sends.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn flash_that_programmed_nothing_is_an_error() {
+    // The J-Link path answers 200 with `programmed: false` (box >= 0.51.0).
+    let server = MockServer::start();
+    let nets = mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(POST).path("/debug/flash");
+        then.status(200).json_body(json!({
+            "status": "flash_complete",
+            "output": ["Downloading file [fw.hex]...", "****** Error: Failed to download RAMCode."],
+            "programmed": false,
+            "error": "****** Error: Failed to download RAMCode."
+        }));
+    });
+
+    let lager = client(&server);
+    let debug = lager.debug("debug1");
+    match debug
+        .flash_bytes(b"foobar", FirmwareKind::Hex, None)
+        .unwrap_err()
+    {
+        Error::FlashFailed { error, output } => {
+            assert_eq!(error, "****** Error: Failed to download RAMCode.");
+            assert_eq!(output.len(), 2);
+        }
+        other => panic!("expected Error::FlashFailed, got {other:?}"),
+    }
+    // A failed flash drops the cached record, like any other failure.
+    debug.status().unwrap_err();
+    nets.assert_hits(2);
+}
+
+#[test]
+fn flash_report_carries_the_verdict_and_output() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(POST).path("/debug/flash");
+        then.status(200).json_body(json!({
+            "status": "flash_complete",
+            "output": ["** Programming Finished **", "** Verified OK **"],
+            "backend": "openocd",
+            "programmed": true,
+            "error": null
+        }));
+    });
+
+    let lager = client(&server);
+    let report = lager
+        .debug("debug1")
+        .flash_bytes(b"foobar", FirmwareKind::Hex, None)
+        .unwrap();
+    assert_eq!(report.programmed, Some(true));
+    assert_eq!(report.backend.as_deref(), Some("openocd"));
+    assert_eq!(report.output.len(), 2);
+}
+
+#[test]
+fn flash_against_a_box_without_a_verdict_still_succeeds() {
+    // Box < 0.51.0: no `programmed`, no `backend`.
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(POST).path("/debug/flash");
+        then.status(200)
+            .json_body(json!({"status": "flash_complete", "output": ["O.K."]}));
+    });
+
+    let lager = client(&server);
+    let report = lager
+        .debug("debug1")
+        .flash_bytes(b"foobar", FirmwareKind::Hex, None)
+        .unwrap();
+    assert_eq!(report.programmed, None);
+    assert_eq!(report.output, ["O.K."]);
+}
+
+#[test]
+fn erase_reports_the_range_erased() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(POST)
+            .path("/debug/erase")
+            .json_body(json!({"net": debug_record()}));
+        then.status(200).json_body(json!({
+            "status": "erase_complete",
+            "output": "Erasing device...\nErasing done.",
+            "backend": "jlink",
+            "erase_range": {
+                "start": 0, "end": 1048575, "length": 1048576,
+                "source": "default", "text": "0x00000000-0x000FFFFF (1024 KiB)"
+            }
+        }));
+    });
+
+    let lager = client(&server);
+    let report = lager.debug("debug1").erase().unwrap();
+    let range = report.erase_range.unwrap();
+    assert_eq!(
+        (range.start, range.end, range.length),
+        (0, 0xF_FFFF, 0x10_0000)
+    );
+    assert_eq!(range.source, "default");
+    assert_eq!(report.backend.as_deref(), Some("jlink"));
+}
+
+#[test]
+fn erase_range_sends_the_range_when_the_service_lists_the_feature() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let health = server.mock(|when, then| {
+        when.method(GET).path("/health");
+        then.status(200).json_body(json!({
+            "status": "healthy", "version": "1.0.0",
+            "features": ["erase_range", "halt"], "uptime": 12.5
+        }));
+    });
+    let erase = server.mock(|when, then| {
+        when.method(POST).path("/debug/erase").json_body(json!({
+            "net": debug_record(),
+            "erase_start": 0x1600_0000u64,
+            "erase_size": 0x2000u64
+        }));
+        then.status(200).json_body(json!({
+            "status": "erase_complete",
+            "output": "Erasing done.",
+            "backend": "jlink",
+            "erase_range": {
+                "start": 0x1600_0000u64, "end": 0x1600_1FFFu64, "length": 0x2000,
+                "source": "request", "text": "0x16000000-0x16001FFF (8 KiB)"
+            }
+        }));
+    });
+
+    let lager = client(&server);
+    let report = lager
+        .debug("debug1")
+        .erase_range(0x1600_0000, 0x2000)
+        .unwrap();
+    assert_eq!(report.erase_range.unwrap().source, "request");
+    health.assert();
+    erase.assert();
+}
+
+#[test]
+fn erase_range_never_erases_on_a_box_without_the_feature() {
+    // An older service ignores erase_start/erase_size and erases the whole
+    // chip, so the crate must stop before sending anything.
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/health");
+        then.status(200)
+            .json_body(json!({"status": "healthy", "version": "1.0.0", "uptime": 3.0}));
+    });
+    let erase = server.mock(|when, then| {
+        when.method(POST).path("/debug/erase");
+        then.status(200)
+            .json_body(json!({"status": "erase_complete"}));
+    });
+
+    let lager = client(&server);
+    match lager.debug("debug1").erase_range(0, 0x1000).unwrap_err() {
+        Error::UnsupportedByBox { message } => {
+            assert!(message.contains("erase_range"), "{message}");
+            assert!(message.contains("0.50.0"), "{message}");
+        }
+        other => panic!("expected Error::UnsupportedByBox, got {other:?}"),
+    }
+    erase.assert_hits(0);
+}
+
+#[test]
+fn status_probed_asks_for_a_target_read_and_parses_the_tri_state() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let status = server.mock(|when, then| {
+        when.method(POST)
+            .path("/debug/status")
+            .json_body(json!({"net": debug_record(), "probe": true}));
+        then.status(200).json_body(json!({
+            "gdbserver_running": true, "target_attached": true, "connected": true,
+            "pid": 4321, "serial": "000440012345", "backend": "jlink"
+        }));
+    });
+
+    let lager = client(&server);
+    let st = lager.debug("debug1").status_probed().unwrap();
+    assert_eq!(st.gdbserver_running, Some(true));
+    assert_eq!(st.target_attached, Some(true));
+    assert!(st.connected);
+    status.assert();
+}
+
+#[test]
+fn status_unprobed_leaves_target_attached_unknown() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let status = server.mock(|when, then| {
+        when.method(POST)
+            .path("/debug/status")
+            .json_body(json!({"net": debug_record()}));
+        then.status(200).json_body(json!({
+            "gdbserver_running": true, "target_attached": null, "connected": true,
+            "pid": 4321, "serial": "000440012345", "backend": "jlink"
+        }));
+    });
+
+    let lager = client(&server);
+    let st = lager.debug("debug1").status().unwrap();
+    assert_eq!(st.gdbserver_running, Some(true));
+    assert_eq!(st.target_attached, None);
+    status.assert();
+}
+
+#[test]
+fn info_probed_parses_the_new_fields() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let info = server.mock(|when, then| {
+        when.method(POST)
+            .path("/debug/info")
+            .json_body(json!({"net": debug_record(), "probe": true}));
+        then.status(200).json_body(json!({
+            "net_name": "debug1", "device": "nrf52840_xxaa", "arch": "cortex-m4",
+            "probe": "jlink1", "serial": "000440012345", "backend": "jlink",
+            "gdbserver_running": false, "target_attached": false, "connected": false
+        }));
+    });
+
+    let lager = client(&server);
+    let i = lager.debug("debug1").info_probed().unwrap();
+    assert_eq!(i.gdbserver_running, Some(false));
+    assert_eq!(i.target_attached, Some(false));
+    info.assert();
+}
+
+#[test]
+fn read_memory_no_reset_sends_the_flag() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let memrd = server.mock(|when, then| {
+        when.method(POST).path("/debug/memrd").json_body(json!({
+            "net": debug_record(), "start_addr": 536870912u64, "length": 2, "no_reset": true
+        }));
+        then.status(200).json_body(json!({
+            "status": "success", "address": "0x20000000", "length": 2, "data": "beef"
+        }));
+    });
+
+    let lager = client(&server);
+    let bytes = lager
+        .debug("debug1")
+        .read_memory_no_reset(0x2000_0000, 2)
+        .unwrap();
+    assert_eq!(bytes, [0xbe, 0xef]);
+    memrd.assert();
+}
+
+#[test]
+fn connect_with_sends_port_overrides() {
+    use lager::ConnectOptions;
+
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let connect = server.mock(|when, then| {
+        when.method(POST).path("/debug/connect").json_body(json!({
+            "net": debug_record(),
+            "force": false, "halt": false, "gdb": true,
+            "gdb_port": 3331, "rtt_telnet_port": 19090
+        }));
+        then.status(200).json_body(json!({"status": "connected"}));
+    });
+
+    let lager = client(&server);
+    lager
+        .debug("debug1")
+        .connect_with(&ConnectOptions {
+            gdb_port: Some(3331),
+            rtt_telnet_port: Some(19090),
+            ..Default::default()
+        })
+        .unwrap();
+    connect.assert();
+}
+
+#[test]
+fn busy_probe_is_probe_busy() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(POST).path("/debug/reset");
+        then.status(503).json_body(json!({
+            "error": "Debug probe 000440012345 is busy with flash (pid 77); reset gave up \
+                      after 300 s. Wait for the other operation to finish and retry.",
+            "status": "error"
+        }));
+    });
+
+    let lager = client(&server);
+    match lager.debug("debug1").reset(false).unwrap_err() {
+        Error::ProbeBusy { message } => assert!(message.contains("busy with flash")),
+        other => panic!("expected Error::ProbeBusy, got {other:?}"),
+    }
+}
+
+#[test]
+fn safety_refusal_is_safety_refused() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(POST).path("/debug/erase");
+        then.status(403).json_body(json!({
+            "error": "Refused erase on net 'debug1': this net is configured with \
+                      allow_destructive: false.",
+            "status": "error"
+        }));
+    });
+
+    let lager = client(&server);
+    match lager.debug("debug1").erase().unwrap_err() {
+        Error::SafetyRefused { message } => {
+            assert!(message.contains("allow_destructive: false"))
+        }
+        other => panic!("expected Error::SafetyRefused, got {other:?}"),
+    }
+}
