@@ -2414,6 +2414,337 @@ fn nets_state_missing_route_maps_to_unsupported() {
 // Async client parity (same wire layer, so a spot check suffices)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Box 0.44.0 - 0.59.0 catch-up: response bodies copied from the shapes
+// `box/lager/http_handlers/{net_command,usb}.py` and `box_http_server.py` send.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn status_reports_the_newer_capability_flags() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/status");
+        then.status(200).json_body(json!({
+            "healthy": true, "version": "0.59.0", "nets": [],
+            "capabilities": {
+                "netCommand": true, "netCommandRoles": ["gpio", "hsm", "chamber"],
+                "customDrivers": true, "customDriverDeps": false,
+                "netMetadataSync": true, "boxMetadataSync": true,
+                "benchManifest": true, "netsStateEnabled": true, "netsStateStream": true,
+                "safetyLimits": true
+            }
+        }));
+    });
+    let caps = client(&server).status().unwrap().capabilities;
+    assert!(caps.custom_drivers && !caps.custom_driver_deps);
+    assert!(caps.net_metadata_sync && caps.box_metadata_sync && caps.bench_manifest);
+    assert!(caps.nets_state_enabled && caps.nets_state_stream);
+    assert!(caps.net_command_roles.iter().any(|r| r == "chamber"));
+}
+
+#[test]
+fn nets_state_reads_enabled_and_new_reason_codes() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/nets/state");
+        then.status(200).json_body(json!([
+            {"name": "supply1", "role": "power-supply", "state": "3.300V", "enabled": true},
+            {"name": "usb1", "role": "usb", "state": "?", "enabled": null},
+            {"name": "scope1", "role": "scope", "state": null,
+             "reason": "unreadable: instrument did not answer", "reason_code": "instrument-timeout"}
+        ]));
+    });
+    let states = client(&server).nets_state().unwrap();
+    assert_eq!(states[0].enabled, Some(true));
+    assert_eq!(states[1].enabled, None);
+    assert_eq!(states[2].reason_code.as_deref(), Some("instrument-timeout"));
+    assert!(states[2].extra.is_empty(), "{:?}", states[2].extra);
+}
+
+#[test]
+fn spi_configure_reports_achieved_clock_and_warnings() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(200).json_body(json!({
+            "success": true, "action": "config",
+            "message": "SPI configured: mode=0, freq=937500Hz (requested 1000000Hz), ...",
+            "value": {"mode": 0, "bit_order": "msb", "frequency_hz": 1000000,
+                      "word_size": 8, "cs_active": "low", "cs_mode": "auto",
+                      "achieved_frequency_hz": 937500},
+            "warnings": ["U3 SPI clock is a delay count: 1000000Hz rounds to 937500Hz"]
+        }));
+    });
+    let cfg = client(&server)
+        .spi("spi1")
+        .configure(&SpiConfig::default())
+        .unwrap();
+    assert_eq!(cfg.achieved_frequency_hz, Some(937_500));
+    assert_eq!(cfg.warnings.len(), 1);
+    assert!(!cfg.extra.contains_key("achieved_frequency_hz"));
+}
+
+#[test]
+fn i2c_configure_reports_achieved_clock_and_no_warnings() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(200).json_body(json!({
+            "success": true, "action": "config", "message": "I2C configured: freq=100000Hz, pull_ups=on",
+            "value": {"frequency_hz": 100000, "achieved_frequency_hz": 100000, "pull_ups": true}
+        }));
+    });
+    let cfg = client(&server).i2c("i2c1").configure(None, None).unwrap();
+    assert_eq!(cfg.achieved_frequency_hz, Some(100_000));
+    assert!(cfg.warnings.is_empty());
+}
+
+#[test]
+fn arm_get_acceleration() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "arm1", "role": "arm", "action": "get_acceleration", "params": {}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "get_acceleration",
+            "message": "Acceleration (M204): print=60 travel=40 retract=30",
+            "value": {"acceleration": 60, "travel_acceleration": 40, "retract_acceleration": 30}
+        }));
+    });
+    let acc = client(&server).arm("arm1").get_acceleration().unwrap();
+    assert_eq!(
+        (
+            acc.acceleration,
+            acc.travel_acceleration,
+            acc.retract_acceleration
+        ),
+        (60.0, 40.0, 30.0)
+    );
+    m.assert();
+}
+
+#[test]
+fn arm_get_acceleration_on_an_older_box_is_unsupported() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(400).json_body(json!({
+            "success": false, "error": "Unknown action 'get_acceleration' for arm"
+        }));
+    });
+    match client(&server).arm("arm1").get_acceleration().unwrap_err() {
+        Error::UnsupportedByBox { message } => assert!(message.contains("0.59.0"), "{message}"),
+        other => panic!("expected UnsupportedByBox, got {other:?}"),
+    }
+}
+
+#[test]
+fn arm_set_acceleration_returns_the_readback() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "arm1", "role": "arm", "action": "set_acceleration",
+            "params": {"acceleration": 60, "travel_acceleration": 40}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "set_acceleration",
+            "message": "Acceleration set (M204): print=60 travel=40 retract=30",
+            "value": {"acceleration": 60, "travel_acceleration": 40, "retract_acceleration": 30}
+        }));
+    });
+    let acc = client(&server)
+        .arm("arm1")
+        .set_acceleration_keep_retract(60, 40)
+        .unwrap()
+        .unwrap();
+    assert_eq!(acc.retract_acceleration, 30.0);
+    m.assert();
+}
+
+#[test]
+fn arm_set_acceleration_on_a_box_without_readback_is_none() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(200).json_body(json!({
+            "success": true, "action": "set_acceleration", "message": "Acceleration set"
+        }));
+    });
+    assert_eq!(
+        client(&server)
+            .arm("arm1")
+            .set_acceleration(60, 40, 30)
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn arm_keep_retract_on_an_older_box_is_unsupported() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(400).json_body(json!({
+            "success": false, "error": "Missing required value: 'retract_acceleration'"
+        }));
+    });
+    assert!(matches!(
+        client(&server)
+            .arm("arm1")
+            .set_acceleration_keep_retract(60, 40)
+            .unwrap_err(),
+        Error::UnsupportedByBox { .. }
+    ));
+}
+
+#[test]
+fn webcam_snapshot_decodes_the_jpeg() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "cam1", "role": "webcam", "action": "snapshot", "params": {}
+        }));
+        // FF D8 FF E0 (a JPEG start-of-image + APP0 marker), then "hi".
+        then.status(200).json_body(json!({
+            "success": true, "action": "snapshot", "message": "Snapshot captured",
+            "value": {"jpeg_base64": "/9j/4GhpCg==", "bytes": 7}
+        }));
+    });
+    let jpeg = client(&server).webcam("cam1").snapshot().unwrap();
+    assert_eq!(jpeg, [0xFF, 0xD8, 0xFF, 0xE0, b'h', b'i', b'\n']);
+    m.assert();
+}
+
+#[test]
+fn webcam_snapshot_on_an_older_box_is_unsupported() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(400).json_body(json!({
+            "success": false, "error": "Unknown action 'snapshot' for webcam"
+        }));
+    });
+    match client(&server).webcam("cam1").snapshot().unwrap_err() {
+        Error::UnsupportedByBox { message } => assert!(message.contains("0.47.0"), "{message}"),
+        other => panic!("expected UnsupportedByBox, got {other:?}"),
+    }
+}
+
+#[test]
+fn webcam_start_as_and_status_report_the_starter() {
+    let server = MockServer::start();
+    let start = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "cam1", "role": "webcam", "action": "start",
+            "params": {"source": "lager-rs", "started_by": "nightly"}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "start", "message": "Stream started at http://box:8086/",
+            "value": {"url": "http://box:8086/", "port": 8086, "already_running": false}
+        }));
+    });
+    let status = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "cam1", "role": "webcam", "action": "status", "params": {}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "status", "message": "Streaming at http://box:8086/",
+            "value": {"running": true, "url": "http://box:8086/", "port": 8086,
+                      "video_device": "/dev/video0", "source": "lager-rs", "started_by": "nightly"}
+        }));
+    });
+    let lager = client(&server);
+    let cam = lager.webcam("cam1");
+    cam.start_as("lager-rs", Some("nightly")).unwrap();
+    let st = cam.status().unwrap();
+    assert_eq!(st.source.as_deref(), Some("lager-rs"));
+    assert_eq!(st.started_by.as_deref(), Some("nightly"));
+    start.assert();
+    status.assert();
+}
+
+#[test]
+fn usb_cycle_report_reads_the_outcome() {
+    use lager::UsbCycleOutcome;
+
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/usb/command").json_body(json!({
+            "netname": "usb1", "action": "cycle", "off_time": 2.0
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "cycle", "state": "enabled",
+            "message": "USB port 'usb1' power-cycled; nothing on this port was on the USB bus \
+                        when the cycle started, so re-enumeration was not confirmed",
+            "outcome": "no_device"
+        }));
+    });
+    let report = client(&server).usb("usb1").cycle_report(Some(2.0)).unwrap();
+    assert_eq!(report.reconnected, None);
+    assert_eq!(report.outcome, Some(UsbCycleOutcome::NoDevice));
+    assert!(report.message.unwrap().contains("not confirmed"));
+}
+
+#[test]
+fn usb_cycle_report_keeps_an_unknown_outcome() {
+    use lager::UsbCycleOutcome;
+
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/usb/command");
+        then.status(200).json_body(json!({
+            "success": true, "action": "cycle", "state": "enabled", "reconnected": true,
+            "message": "ok", "outcome": "something_new"
+        }));
+    });
+    let report = client(&server).usb("usb1").cycle_report(None).unwrap();
+    assert_eq!(report.reconnected, Some(true));
+    assert_eq!(
+        report.outcome,
+        Some(UsbCycleOutcome::Other("something_new".to_string()))
+    );
+}
+
+#[test]
+fn custom_net_command_sends_no_role_and_returns_the_value() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "chamber1", "action": "set_temperature", "params": {"celsius": 40}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "set_temperature", "message": "Setpoint 40 C",
+            "value": {"setpoint": 40}
+        }));
+    });
+    let v = client(&server)
+        .custom("chamber1")
+        .command("set_temperature", json!({"celsius": 40}))
+        .unwrap();
+    assert_eq!(v, json!({"setpoint": 40}));
+    m.assert();
+}
+
+#[test]
+fn custom_net_busy_is_a_box_error_with_its_status() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(409).json_body(json!({
+            "success": false, "error": "chamber1 is busy with another command"
+        }));
+    });
+    match client(&server)
+        .custom("chamber1")
+        .command("read", json!({}))
+        .unwrap_err()
+    {
+        Error::Box { status, .. } => assert_eq!(status, 409),
+        other => panic!("expected Error::Box, got {other:?}"),
+    }
+}
+
 #[cfg(feature = "async")]
 mod async_parity {
     use super::*;
