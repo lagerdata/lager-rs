@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::auth::{self, GatewayAuth};
+use crate::chunked::ChunkedReader;
 use crate::error::{Error, Result};
 use crate::nets::adc::Adc;
 use crate::nets::arm::Arm;
@@ -555,7 +556,21 @@ impl LagerBox {
             None => r.call(),
         };
         match outcome {
-            Ok(resp) => Ok(resp.into_reader()),
+            Ok(resp) => {
+                // The debug service frames its stream as chunked under an
+                // HTTP/1.0 status line, where ureq leaves the framing in
+                // the body; decode it here. Over HTTP/1.1 ureq already has.
+                let hand_framed = resp.http_version().eq_ignore_ascii_case("HTTP/1.0")
+                    && resp
+                        .header("transfer-encoding")
+                        .is_some_and(|te| te.trim().eq_ignore_ascii_case("chunked"));
+                let reader = resp.into_reader();
+                Ok(if hand_framed {
+                    Box::new(ChunkedReader::new(reader))
+                } else {
+                    reader
+                })
+            }
             Err(ureq::Error::Status(status, resp)) => {
                 if auth::is_denial(status) {
                     if let Some(auth_url) = resp.header(auth::DISCOVERY_HEADER) {

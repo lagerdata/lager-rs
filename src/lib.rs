@@ -92,6 +92,8 @@
 #![deny(missing_docs)]
 
 mod auth;
+#[cfg(feature = "blocking")]
+mod chunked;
 mod error;
 pub mod nets;
 #[cfg(any(feature = "blocking", feature = "async"))]
