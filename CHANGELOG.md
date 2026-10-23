@@ -27,6 +27,28 @@ All notable changes to the `lager-net` crate are documented here.
   box's wait, box >= 0.51.0) and **`Error::SafetyRefused`** (HTTP 403: the
   net's `allow_destructive: false` refused a flash or erase). Both were
   `Error::Box` before.
+- **`lager.custom(name).command(action, params)`** drives a net whose
+  instrument is run by a custom driver installed on the box (box >= 0.59.0).
+  `BoxCapabilities::custom_drivers` says whether the box runs them, and
+  `net_command_roles` lists the installed roles.
+- **`Webcam::snapshot()`** returns one JPEG frame from the running stream
+  (box >= 0.47.0), and **`Webcam::start_as(source, started_by)`** records who
+  started a stream, which `WebcamStatus::source` / `started_by` report.
+- **`Arm::get_acceleration()`** and **`Arm::set_acceleration_keep_retract()`**
+  (box newer than 0.59.0). `Arm::set_acceleration()` now returns the arm's
+  readback as `Option<ArmAcceleration>` (`None` from a box at 0.59.0 or
+  older), so a value the arm did not take shows up.
+- **`UsbPort::cycle_report()`** returns the box's `outcome` with the result
+  (box >= 0.49.0), which tells "nothing was on the port" apart from "the box
+  could not watch for the device". `cycle()` is unchanged.
+- **SPI and I2C `configure()` report `achieved_frequency_hz`** (box >=
+  0.47.0), the clock the adapter actually runs, which a LabJack U3 rounds
+  down, and **`warnings`** (box >= 0.49.0).
+- **`NetState::enabled`** (box >= 0.53.0), and `reason_code` documents the
+  codes box 0.58.0 added.
+- **`BoxCapabilities` gains `custom_drivers`, `custom_driver_deps`,
+  `net_metadata_sync`, `box_metadata_sync`, `bench_manifest`,
+  `nets_state_enabled` and `nets_state_stream`.**
 
 ### Changed
 
@@ -43,6 +65,13 @@ All notable changes to the `lager-net` crate are documented here.
   for the new port fields. `DebugInfo`, `DebugStatus` and the new report types
   are `#[non_exhaustive]`, so fields can be added later without a breaking
   release.
+
+- **Behavior change:** `Arm::set_acceleration()` returns
+  `Result<Option<ArmAcceleration>>` instead of `Result<()>`;
+  `arm.set_acceleration(..)?;` still compiles. `BoxCapabilities`,
+  `BoxStatus`, `NetState`, `WebcamStatus`, `WebcamStream`,
+  `SpiEffectiveConfig` and `I2cEffectiveConfig` are now `#[non_exhaustive]`,
+  so fields the box adds later are not breaking changes.
 
 - **The `async` feature now uses `reqwest` 0.13** (was 0.12). The async
   client's API is unchanged: no `reqwest` type appears in it. A project that

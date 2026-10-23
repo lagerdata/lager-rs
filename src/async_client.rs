@@ -14,6 +14,7 @@ use crate::nets::arm::AsyncArm;
 use crate::nets::battery::AsyncBattery;
 use crate::nets::ble::AsyncBle;
 use crate::nets::blufi::AsyncBlufi;
+use crate::nets::custom::AsyncCustomNet;
 use crate::nets::dac::AsyncDac;
 use crate::nets::debug::AsyncDebugNet;
 use crate::nets::dfu::AsyncDfu;
@@ -766,6 +767,15 @@ impl AsyncLagerBox {
     /// Handle for a webcam net (MJPEG streaming).
     pub fn webcam(&self, name: impl Into<String>) -> AsyncWebcam<'_> {
         AsyncWebcam {
+            client: self,
+            name: name.into(),
+        }
+    }
+
+    /// Handle for a net driven by a custom driver installed on the box
+    /// (box >= 0.59.0). See [`crate::nets::custom`].
+    pub fn custom(&self, name: impl Into<String>) -> AsyncCustomNet<'_> {
+        AsyncCustomNet {
             client: self,
             name: name.into(),
         }

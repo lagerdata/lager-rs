@@ -64,6 +64,48 @@ pub(crate) fn base64_encode(input: &[u8]) -> String {
     out
 }
 
+/// Decode standard-alphabet base64 (padding optional, ASCII whitespace
+/// ignored). `None` on any other byte or a truncated final group. Used for
+/// the webcam snapshot ([`crate::nets::webcam`]).
+pub(crate) fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    fn sextet(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let digits: Vec<u8> = input.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    let digits = match digits.iter().position(|&b| b == b'=') {
+        Some(pad) if digits[pad..].iter().all(|&b| b == b'=') && digits.len() - pad <= 2 => {
+            &digits[..pad]
+        }
+        Some(_) => return None,
+        None => &digits[..],
+    };
+    if digits.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(digits.len() * 3 / 4);
+    for chunk in digits.chunks(4) {
+        let mut n = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            n |= sextet(c)? << (18 - 6 * i);
+        }
+        out.push((n >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((n >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
+}
+
 /// Firmware image kind, inferred from the file extension by
 /// [`DebugNet::flash`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -842,6 +884,27 @@ mod tests {
         assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
         assert_eq!(base64_encode(&[0x00, 0xff, 0x10]), "AP8Q");
+    }
+
+    #[test]
+    fn base64_round_trips_and_rejects_garbage() {
+        for input in [
+            &b""[..],
+            b"f",
+            b"fo",
+            b"foo",
+            b"foob",
+            b"fooba",
+            b"foobar",
+            &[0, 255, 16],
+        ] {
+            assert_eq!(base64_decode(&base64_encode(input)).unwrap(), input);
+        }
+        assert_eq!(base64_decode("Zm9v\nYmFy").unwrap(), b"foobar");
+        assert_eq!(base64_decode("Zg").unwrap(), b"f");
+        assert!(base64_decode("Zm9v!").is_none());
+        assert!(base64_decode("Z").is_none());
+        assert!(base64_decode("Zg==Zg==").is_none());
     }
 
     #[test]
