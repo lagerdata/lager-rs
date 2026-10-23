@@ -42,6 +42,29 @@ pub enum Error {
         /// dfu-util's captured stderr.
         stderr: String,
     },
+    /// A debug `flash` ran but programmed nothing (box >= 0.51.0). The box
+    /// answers HTTP 200 with `programmed: false` for this, so before this
+    /// variant the crate reported success.
+    FlashFailed {
+        /// The box's verdict: the line showing nothing was programmed.
+        error: String,
+        /// The backend's output.
+        output: Vec<String>,
+    },
+    /// The debug probe stayed busy with another operation (a flash, erase,
+    /// reset, ...) for longer than the box waits (HTTP 503 from the debug
+    /// service, box >= 0.51.0). Retry once the other operation is done.
+    ProbeBusy {
+        /// The box's message, naming the operation holding the probe.
+        message: String,
+    },
+    /// The net's safety settings refused a destructive debug operation
+    /// (flash or erase; HTTP 403 from the debug service). See
+    /// [`crate::SafetyLimits::allow_destructive`].
+    SafetyRefused {
+        /// The box's message.
+        message: String,
+    },
     /// HTTP 501: this box image does not serve the endpoint. The box needs a
     /// software update.
     UnsupportedByBox {
@@ -113,6 +136,17 @@ impl fmt::Display for Error {
                     write!(f, "\nstdout:\n{stdout}")?;
                 }
                 Ok(())
+            }
+            Error::FlashFailed { error, output } => {
+                write!(f, "flash failed: {error}")?;
+                if !output.is_empty() {
+                    write!(f, "\noutput:\n{}", output.join("\n"))?;
+                }
+                Ok(())
+            }
+            Error::ProbeBusy { message } => write!(f, "debug probe busy: {message}"),
+            Error::SafetyRefused { message } => {
+                write!(f, "refused by the net's safety settings: {message}")
             }
             Error::UnsupportedByBox { message } => write!(
                 f,

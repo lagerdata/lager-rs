@@ -143,7 +143,10 @@ pub use nets::scope::Scope;
 pub use nets::spi::{BitOrder, CsActive, CsMode, SpiConfig, SpiOptions, SpiTransfer};
 
 /// Debug-service response types.
-pub use wire::{DebugConnection, DebugInfo, DebugStatus, GdbServer};
+pub use wire::{
+    DebugConnection, DebugHealth, DebugInfo, DebugStatus, EraseRange, EraseReport, FlashReport,
+    GdbServer,
+};
 
 #[cfg(feature = "blocking")]
 pub use nets::{

@@ -4,7 +4,45 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`DebugNet::erase_range(start, size)`** erases only part of the flash, and
+  `erase()` now returns an `EraseReport` saying which range the box erased
+  (`erase_range` with `start`, `end`, `length`, `source`). Requires box
+  >= 0.50.0. The crate checks the debug service's `/health` features first
+  and fails with `Error::UnsupportedByBox` on an older box, which would
+  ignore the range and erase the whole chip.
+- **`DebugNet::status_probed()` / `info_probed()`** ask the box to read the
+  target, and `DebugStatus` / `DebugInfo` gain `gdbserver_running` and
+  `target_attached` (box >= 0.44.0; `None` from older boxes).
+  `target_attached` is `None` from plain `status()` unless the box already
+  knows the attach failed. `connected` keeps its meaning (a server process
+  is running).
+- **`DebugNet::read_memory_no_reset()`** reads without the reset/halt the box
+  otherwise does first on OpenOCD.
+- **`ConnectOptions` gains `gdb_port`, `swo_port`, `telnet_port` and
+  `rtt_telnet_port`** overrides, and `RttOptions::chunk_size` is now sent on
+  the one-way `rtt()` stream too.
+- **`Error::ProbeBusy`** (HTTP 503: another operation held the probe past the
+  box's wait, box >= 0.51.0) and **`Error::SafetyRefused`** (HTTP 403: the
+  net's `allow_destructive: false` refused a flash or erase). Both were
+  `Error::Box` before.
+
 ### Changed
+
+- **A debug flash that programmed nothing is now an error.** The box answers
+  `/debug/flash` with HTTP 200 and `programmed: false` when J-Link wrote
+  nothing (box >= 0.51.0), and the crate returned `Ok`. `flash()`,
+  `flash_bin()` and `flash_bytes()` now fail with the new
+  `Error::FlashFailed { error, output }`, and return a `FlashReport`
+  (`output`, `backend`, `programmed`) on success.
+
+  **Behavior change:** `flash*()` returns `Result<FlashReport>` and `erase()`
+  returns `Result<EraseReport>` instead of `Result<()>`; `debug.flash(..)?;`
+  still compiles. A `ConnectOptions { .. }` literal needs `..Default::default()`
+  for the new port fields. `DebugInfo`, `DebugStatus` and the new report types
+  are `#[non_exhaustive]`, so fields can be added later without a breaking
+  release.
 
 - **The `async` feature now uses `reqwest` 0.13** (was 0.12). The async
   client's API is unchanged: no `reqwest` type appears in it. A project that

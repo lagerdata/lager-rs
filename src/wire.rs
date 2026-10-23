@@ -319,7 +319,146 @@ pub fn parse_debug(status: u16, body: Value) -> Result<Value> {
         .or_else(|| body.get("message").and_then(Value::as_str))
         .unwrap_or("debug service request failed")
         .to_string();
-    Err(Error::Box { status, message })
+    Err(match status {
+        // The service's per-probe lock gave up waiting (box >= 0.51.0).
+        503 if message.contains("busy") => Error::ProbeBusy { message },
+        // The net's safety settings refused a flash or erase.
+        403 => Error::SafetyRefused { message },
+        _ => Error::Box { status, message },
+    })
+}
+
+/// `GET /health` on the debug service.
+pub fn debug_health_request() -> HttpRequest {
+    get("/health")
+}
+
+/// Response of the debug service's `GET /health`.
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct DebugHealth {
+    /// `"healthy"` when the service is up.
+    #[serde(default)]
+    pub status: String,
+    /// Service version string.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// What the service can do beyond its original request shapes, such as
+    /// `"erase_range"` (box >= 0.50.0) and `"halt"`. Empty on a box that
+    /// predates the list.
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+
+impl DebugHealth {
+    /// Whether the service lists `feature`.
+    pub fn supports(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
+    }
+}
+
+/// Interpret the debug service's `/health`, and refuse unless it lists
+/// `feature`. `since` names the first box version that has it.
+pub fn require_debug_feature(status: u16, body: Value, feature: &str, since: &str) -> Result<()> {
+    let health: DebugHealth = serde_json::from_value(parse_debug(status, body)?)?;
+    if health.supports(feature) {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedByBox {
+            message: format!(
+                "the box debug service does not support '{feature}' (box software >= {since})"
+            ),
+        })
+    }
+}
+
+/// The flash range a debug `erase` covered, as the box reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct EraseRange {
+    /// First erased address.
+    pub start: u64,
+    /// Last erased address (inclusive).
+    pub end: u64,
+    /// Number of bytes erased.
+    pub length: u64,
+    /// Where the range came from: `"request"` (the caller), `"script"` (a
+    /// `LAGER_ERASE_RANGE` line in the net's J-Link script) or `"default"`
+    /// (the part family's default).
+    pub source: String,
+    /// The range as text, e.g. `"0x16000000-0x160FFFFF (1024 KiB)"`.
+    #[serde(default)]
+    pub text: String,
+}
+
+/// Result of a debug `erase`.
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct EraseReport {
+    /// The backend's output.
+    #[serde(default)]
+    pub output: String,
+    /// Debug backend (`"jlink"` or `"openocd"`); `None` from a box before
+    /// 0.50.0.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// The range erased. `None` for a full-chip erase, and from a box before
+    /// 0.50.0.
+    #[serde(default)]
+    pub erase_range: Option<EraseRange>,
+}
+
+/// Result of a debug `flash` that programmed the target.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct FlashReport {
+    /// The backend's output, one entry per line or step.
+    pub output: Vec<String>,
+    /// Debug backend (`"jlink"` or `"openocd"`), when the box reports it.
+    pub backend: Option<String>,
+    /// The box's verdict: `Some(true)` from box >= 0.51.0, `None` from an
+    /// older box, which reports no verdict. A `false` verdict is never
+    /// returned here; it is [`Error::FlashFailed`].
+    pub programmed: Option<bool>,
+}
+
+/// The `output` of a debug response: a list of lines, or one string.
+fn output_lines(body: &Value) -> Vec<String> {
+    match body.get("output") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect(),
+        Some(Value::String(s)) => s.lines().map(str::to_string).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Interpret a successful `/debug/flash` body. The box answers 200 even when
+/// a J-Link flash programmed nothing, and says so in `programmed` / `error`
+/// (box >= 0.51.0); that is turned into [`Error::FlashFailed`].
+pub fn parse_flash(body: Value) -> Result<FlashReport> {
+    let output = output_lines(&body);
+    let programmed = body.get("programmed").and_then(Value::as_bool);
+    if programmed == Some(false) {
+        let error = body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("the probe reported that nothing was programmed")
+            .to_string();
+        return Err(Error::FlashFailed { error, output });
+    }
+    Ok(FlashReport {
+        output,
+        backend: body
+            .get("backend")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        programmed,
+    })
 }
 
 /// GDB-server sub-object of a [`DebugConnection`].
@@ -379,6 +518,7 @@ pub struct DebugConnection {
 
 /// Result of a debug `info` query.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct DebugInfo {
     /// Net name.
     #[serde(default)]
@@ -399,16 +539,39 @@ pub struct DebugInfo {
     #[serde(default)]
     pub backend: Option<String>,
     /// Whether a gdbserver/daemon is currently running for this probe.
+    /// Deprecated by the box in favor of [`DebugInfo::gdbserver_running`],
+    /// and kept with this meaning.
     #[serde(default)]
     pub connected: bool,
+    /// Whether a gdbserver/daemon is running (box >= 0.44.0; `None` before).
+    #[serde(default, deserialize_with = "lenient::opt_bool")]
+    pub gdbserver_running: Option<bool>,
+    /// Whether the target answers through the probe (box >= 0.44.0).
+    /// `Some(false)` is definite: no server, or its log shows the attach
+    /// failed. `None` means not checked; [`crate::DebugNet::info_probed`]
+    /// reads the target to settle it.
+    #[serde(default, deserialize_with = "lenient::opt_bool")]
+    pub target_attached: Option<bool>,
 }
 
 /// Result of a debug `status` query.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct DebugStatus {
     /// Whether a gdbserver/daemon is currently running for this probe.
+    /// Deprecated by the box in favor of
+    /// [`DebugStatus::gdbserver_running`], and kept with this meaning.
     #[serde(default)]
     pub connected: bool,
+    /// Whether a gdbserver/daemon is running (box >= 0.44.0; `None` before).
+    #[serde(default, deserialize_with = "lenient::opt_bool")]
+    pub gdbserver_running: Option<bool>,
+    /// Whether the target answers through the probe (box >= 0.44.0).
+    /// `Some(false)` is definite: no server, or its log shows the attach
+    /// failed. `None` means not checked; [`crate::DebugNet::status_probed`]
+    /// reads the target to settle it.
+    #[serde(default, deserialize_with = "lenient::opt_bool")]
+    pub target_attached: Option<bool>,
     /// Backend process id, when connected.
     #[serde(default, deserialize_with = "lenient::opt_i64")]
     pub pid: Option<i64>,
