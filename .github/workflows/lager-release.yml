@@ -1,0 +1,102 @@
+# Runs Hardware once for every lagerdata/lager release.
+#
+# lagerdata/lager's Bench: Nightly runs on each release tag. This repository
+# cannot be triggered from there without a cross-repository token, so it
+# watches instead: once an hour it looks at lager's latest release and, when
+# that release is ready and Hardware has not yet run for it, dispatches
+# Hardware with the release's version.
+#
+# "Ready" means both of:
+# - lager's own tag run of Bench: Nightly has finished. That chain deploys
+#   the release to the bench box and holds the bench for about an hour;
+#   Hardware's lock step gives up after 20 minutes, so starting during the
+#   chain would fail for a reason unrelated to either repository. Waiting also
+#   means the box is running the release when Hardware tests it. A release
+#   whose chain run never appears is tested anyway once it is
+#   CHAIN_GRACE_HOURS old, so a missing run cannot block it forever.
+# - lager-cli at that version is on PyPI, since Hardware installs exactly
+#   that version.
+#
+# Hardware runs dispatched from here are titled "Hardware (lager vX.Y.Z)", and
+# that title is how a release already tested is recognised: one dispatch per
+# release, whatever its result. Re-run a failed one from its run page.
+#
+# Runs on a hosted runner and reads only public data, plus this repository's
+# own runs.
+
+name: Hardware on lager release
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lager-release-watch
+  cancel-in-progress: false
+
+env:
+  CHAIN_GRACE_HOURS: "6"
+
+jobs:
+  watch:
+    name: watch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Reads this repository's Hardware runs and dispatches a new one.
+      actions: write
+    steps:
+      - name: Dispatch Hardware for a new lager release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          release=$(gh api repos/lagerdata/lager/releases/latest)
+          tag=$(jq -r .tag_name <<<"$release")
+          published=$(jq -r .published_at <<<"$release")
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::unexpected lager release tag: $tag"
+            exit 1
+          fi
+          title="Hardware (lager $tag)"
+
+          tested=$(gh api "repos/$GH_REPO/actions/workflows/hardware.yml/runs?event=workflow_dispatch&per_page=100" \
+            --jq "[.workflow_runs[] | select(.display_title == \"$title\")] | length")
+          if [ "$tested" -gt 0 ]; then
+            echo "Hardware has already run for lager $tag."
+            exit 0
+          fi
+
+          chain=$(gh api "repos/lagerdata/lager/actions/workflows/nightly-bench.yml/runs?event=push&branch=$tag&per_page=1" \
+            --jq '.workflow_runs[0] | "\(.status) \(.conclusion)"')
+          age_hours=$(( ( $(date +%s) - $(date -d "$published" +%s) ) / 3600 ))
+          case "$chain" in
+            "completed "*)
+              echo "lager's bench chain for $tag finished: ${chain#completed }" ;;
+            "")
+              if [ "$age_hours" -lt "$CHAIN_GRACE_HOURS" ]; then
+                echo "lager $tag has no bench chain run yet (${age_hours}h old); waiting."
+                exit 0
+              fi
+              echo "::warning::lager $tag has no bench chain run after ${age_hours}h; testing it anyway." ;;
+            *)
+              echo "lager's bench chain for $tag is still running ($chain); waiting."
+              exit 0 ;;
+          esac
+
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -m 15 \
+            "https://pypi.org/pypi/lager-cli/${tag#v}/json" || echo 000)
+          if [ "$code" != 200 ]; then
+            echo "lager-cli ${tag#v} is not on PyPI yet (HTTP $code); waiting."
+            exit 0
+          fi
+
+          gh workflow run hardware.yml --ref "${{ github.event.repository.default_branch }}" \
+            -f lager_release="$tag"
+          echo "Dispatched $title."
+        shell: bash

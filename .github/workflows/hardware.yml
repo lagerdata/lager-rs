@@ -2,7 +2,9 @@
 #
 # Never triggered by pull_request. This repo is public and the runner sits on
 # a bench with live instruments, so a fork PR must not be able to run its own
-# code there. Runs are nightly on main and on manual dispatch only.
+# code there. Runs are nightly on main, on manual dispatch, and once per
+# lagerdata/lager release, dispatched by lager-release.yml with that release's
+# version in lager_release.
 #
 # The box address and net names come from repository variables, not this
 # file. tests/hardware.rs skips a net test whose variable is unset and still
@@ -28,6 +30,8 @@
 # The nightly slot is offset from lagerdata/lager's Nightly Bench (10:17 UTC).
 
 name: Hardware
+# lager-release.yml recognises a release it has already tested by this title.
+run-name: ${{ inputs.lager_release && format('Hardware (lager {0})', inputs.lager_release) || 'Hardware' }}
 
 on:
   schedule:
@@ -38,6 +42,10 @@ on:
         description: "Also run debug_flash_reset_read (DESTRUCTIVE: erases and reflashes the DUT)"
         type: boolean
         default: false
+      lager_release:
+        description: "lager release under test (vX.Y.Z); installs that lager-cli instead of the latest"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -98,9 +106,19 @@ jobs:
       # The lager CLI drives the power relays. It lives in a venv under
       # RUNNER_TEMP, so nothing is installed on the bench host itself.
       - name: Install lager CLI
+        env:
+          LAGER_RELEASE: ${{ inputs.lager_release }}
         run: |
+          spec=lager-cli
+          if [ -n "$LAGER_RELEASE" ]; then
+            if ! [[ "$LAGER_RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::lager_release must look like vX.Y.Z, got: $LAGER_RELEASE"
+              exit 1
+            fi
+            spec="lager-cli==${LAGER_RELEASE#v}"
+          fi
           python3 -m venv "$RUNNER_TEMP/lager-venv"
-          "$RUNNER_TEMP/lager-venv/bin/pip" install --quiet lager-cli
+          "$RUNNER_TEMP/lager-venv/bin/pip" install --quiet "$spec"
           echo "$RUNNER_TEMP/lager-venv/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/lager-venv/bin/pip" show lager-cli | grep '^Version'
 
