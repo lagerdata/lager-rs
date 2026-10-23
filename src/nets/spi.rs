@@ -88,13 +88,19 @@ pub struct SpiConfig {
 
 /// The effective SPI configuration the box reports after `configure`.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct SpiEffectiveConfig {
     /// SPI mode 0–3.
     #[serde(default, deserialize_with = "lenient::opt_i64")]
     pub mode: Option<i64>,
-    /// Clock frequency in Hz.
+    /// Clock frequency in Hz, as configured.
     #[serde(default, deserialize_with = "lenient::opt_i64")]
     pub frequency_hz: Option<i64>,
+    /// The clock the hardware actually runs, which can be below the request
+    /// on an adapter with a coarse clock divider such as a LabJack U3 (box
+    /// >= 0.47.0; `None` before).
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub achieved_frequency_hz: Option<i64>,
     /// Word size in bits.
     #[serde(default, deserialize_with = "lenient::opt_i64")]
     pub word_size: Option<i64>,
@@ -107,6 +113,10 @@ pub struct SpiEffectiveConfig {
     /// CS handling mode (`"auto"`/`"manual"`).
     #[serde(default)]
     pub cs_mode: Option<String>,
+    /// What the box warned about while configuring, for example a setting
+    /// the adapter cannot honor (box >= 0.49.0; empty when none).
+    #[serde(skip)]
+    pub warnings: Vec<String>,
     /// Any extra driver-specific fields.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -147,10 +157,17 @@ pub(crate) mod ops {
     use super::{SpiConfig, SpiEffectiveConfig, SpiOptions, SpiTransfer};
     use crate::error::{Error, Result};
     use crate::wire::{
-        as_i64, net_command, value_as, value_int_list, CommandResponse, Op, Timeout,
+        as_i64, net_command, value_as, value_int_list, warnings, CommandResponse, Op, Timeout,
     };
 
     const ROLE: &str = "spi";
+
+    fn parse_config(resp: CommandResponse) -> Result<SpiEffectiveConfig> {
+        let warnings = warnings(&resp);
+        let mut config: SpiEffectiveConfig = value_as(resp)?;
+        config.warnings = warnings;
+        Ok(config)
+    }
 
     fn parse_transfer(resp: CommandResponse) -> Result<SpiTransfer> {
         let word_size = resp
@@ -191,7 +208,7 @@ pub(crate) mod ops {
                 Value::Object(params),
                 Timeout::Default,
             ),
-            parse: value_as::<SpiEffectiveConfig>,
+            parse: parse_config,
         }
     }
 

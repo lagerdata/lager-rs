@@ -554,6 +554,36 @@ pub fn value_as<T: DeserializeOwned>(resp: CommandResponse) -> Result<T> {
     serde_json::from_value(v).map_err(|e| Error::Decode(format!("invalid 'value' shape: {e}")))
 }
 
+/// The `warnings` a box attaches to a successful command (box >= 0.49.0;
+/// empty when it has nothing to say).
+pub fn warnings(resp: &CommandResponse) -> Vec<String> {
+    match resp.extra.get("warnings") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Reclassify the 400 an older box answers for an action it does not know
+/// (`Unknown action '<action>' for <role>`) as [`Error::UnsupportedByBox`],
+/// naming the box version that added it.
+pub(crate) fn unknown_action_compat(err: Error, action: &str, since: &str) -> Error {
+    match err {
+        Error::Box {
+            status: 400,
+            ref message,
+        } if message.contains(&format!("Unknown action '{action}'")) => Error::UnsupportedByBox {
+            message: format!("the '{action}' action requires box software {since}"),
+        },
+        other => other,
+    }
+}
+
 /// Deserialize the `state` field into a typed struct.
 pub fn state_as<T: DeserializeOwned>(resp: CommandResponse) -> Result<T> {
     let v = resp
@@ -655,6 +685,7 @@ pub struct NetSummary {
 
 /// Capabilities advertised by the box in `GET /status`.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[non_exhaustive]
 pub struct BoxCapabilities {
     /// Whether the box serves `POST /net/command` (Tier-1 nets over HTTP).
     /// When false the box software predates this crate's contract.
@@ -689,10 +720,40 @@ pub struct BoxCapabilities {
     /// here even if its version says otherwise.
     #[serde(default, rename = "safetyLimits")]
     pub safety_limits: bool,
+    /// Whether `/net/command` runs custom driver roles, which are then
+    /// listed in [`BoxCapabilities::net_command_roles`] (box >= 0.59.0).
+    /// Drive them with [`crate::LagerBox::custom`].
+    #[serde(default, rename = "customDrivers")]
+    pub custom_drivers: bool,
+    /// Whether a custom driver can declare Python packages for the box to
+    /// install (box > 0.59.0). Not used by this crate.
+    #[serde(default, rename = "customDriverDeps")]
+    pub custom_driver_deps: bool,
+    /// Whether the box serves `GET|PUT /nets/<name>/metadata` (box >=
+    /// 0.46.0). Not used by this crate.
+    #[serde(default, rename = "netMetadataSync")]
+    pub net_metadata_sync: bool,
+    /// Whether the box serves `GET|PUT /box-metadata` (box >= 0.46.0). Not
+    /// used by this crate.
+    #[serde(default, rename = "boxMetadataSync")]
+    pub box_metadata_sync: bool,
+    /// Whether the box serves the `GET /bench` manifest (box >= 0.50.0). Not
+    /// used by this crate.
+    #[serde(default, rename = "benchManifest")]
+    pub bench_manifest: bool,
+    /// Whether `/nets/state` entries carry `enabled` (box >= 0.53.0); see
+    /// [`NetState::enabled`].
+    #[serde(default, rename = "netsStateEnabled")]
+    pub nets_state_enabled: bool,
+    /// Whether `/nets/state?stream=1` streams results as they arrive (box
+    /// >= 0.58.0). Not used by this crate, which reads the whole answer.
+    #[serde(default, rename = "netsStateStream")]
+    pub nets_state_stream: bool,
 }
 
 /// Response of `GET /status`.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct BoxStatus {
     /// Whether the box reports itself healthy.
     #[serde(default)]
@@ -961,6 +1022,7 @@ pub fn value_arm_position(resp: CommandResponse) -> Result<ArmPosition> {
 
 /// Result of starting a webcam stream (`start` action).
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct WebcamStream {
     /// MJPEG stream URL viewers should open.
     #[serde(default)]
@@ -975,6 +1037,7 @@ pub struct WebcamStream {
 
 /// Current state of a webcam stream (`status`/`url` actions).
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct WebcamStatus {
     /// Whether a stream is currently running for this net.
     #[serde(default)]
@@ -988,6 +1051,13 @@ pub struct WebcamStatus {
     /// Backing video device (e.g. `/dev/video0`), when running.
     #[serde(default)]
     pub video_device: Option<String>,
+    /// Which surface started the stream (`"cli"`, or what a client passed
+    /// as `source`), when running (box >= 0.47.0).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Who the starter said it was, when it said (box >= 0.47.0).
+    #[serde(default)]
+    pub started_by: Option<String>,
 }
 
 /// System information for a router net (`system_info` action).
@@ -1615,6 +1685,7 @@ pub(crate) fn safety_limits_unsupported() -> Error {
 /// back with `state: None` and a [`NetState::reason`] instead of failing or
 /// delaying the rest of the bench.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct NetState {
     /// Net name.
     pub name: String,
@@ -1631,11 +1702,18 @@ pub struct NetState {
     /// spi, i2c, ... have no live-state probe), or `"unreadable: <detail>"`.
     #[serde(default)]
     pub reason: Option<String>,
-    /// Stable machine-readable token alongside `reason` (e.g.
-    /// `"hub-skipped"`), when the box classified the fault. The human
-    /// `reason` is always complete on its own.
+    /// Stable machine-readable token alongside `reason`, when the box
+    /// classified the fault: for example `"hub-skipped"`,
+    /// `"instrument-absent"`, `"instrument-timeout"`, `"probe-cooldown"` or
+    /// `"device-busy"` (box >= 0.58.0 for the last four). The human `reason`
+    /// is always complete on its own.
     #[serde(default)]
     pub reason_code: Option<String>,
+    /// Whether the net's output is on, for nets that have one (box >=
+    /// 0.53.0; `None` from older boxes, for nets without an output, and
+    /// when the box could not read it).
+    #[serde(default, deserialize_with = "lenient::opt_bool")]
+    pub enabled: Option<bool>,
     /// Any further keys a newer box attaches.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

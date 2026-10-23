@@ -147,16 +147,16 @@ pub use wire::{DebugConnection, DebugInfo, DebugStatus, GdbServer};
 
 #[cfg(feature = "blocking")]
 pub use nets::{
-    adc::Adc, arm::Arm, battery::Battery, ble::Ble, blufi::Blufi, dac::Dac, debug::DebugNet,
-    debug::RttStream, dfu::Dfu, eload::Eload, energy::EnergyAnalyzer, gpio::Gpio, i2c::I2c,
-    router::Router, solar::Solar, spi::Spi, supply::Supply, thermocouple::Thermocouple,
+    adc::Adc, arm::Arm, battery::Battery, ble::Ble, blufi::Blufi, custom::CustomNet, dac::Dac,
+    debug::DebugNet, debug::RttStream, dfu::Dfu, eload::Eload, energy::EnergyAnalyzer, gpio::Gpio,
+    i2c::I2c, router::Router, solar::Solar, spi::Spi, supply::Supply, thermocouple::Thermocouple,
     usb::UsbPort, watt::WattMeter, webcam::Webcam, wifi::Wifi,
 };
 
 #[cfg(feature = "async")]
 pub use nets::{
     adc::AsyncAdc, arm::AsyncArm, battery::AsyncBattery, ble::AsyncBle, blufi::AsyncBlufi,
-    dac::AsyncDac, debug::AsyncDebugNet, dfu::AsyncDfu, eload::AsyncEload,
+    custom::AsyncCustomNet, dac::AsyncDac, debug::AsyncDebugNet, dfu::AsyncDfu, eload::AsyncEload,
     energy::AsyncEnergyAnalyzer, gpio::AsyncGpio, i2c::AsyncI2c, router::AsyncRouter,
     solar::AsyncSolar, spi::AsyncSpi, supply::AsyncSupply, thermocouple::AsyncThermocouple,
     usb::AsyncUsbPort, watt::AsyncWattMeter, webcam::AsyncWebcam, wifi::AsyncWifi,
@@ -169,8 +169,10 @@ pub use nets::uart::Uart;
 pub use nets::rtt::RttSession;
 
 // Structured result types, re-exported from the wire layer.
+pub use nets::arm::ArmAcceleration;
 pub use nets::i2c::I2cEffectiveConfig;
 pub use nets::spi::SpiEffectiveConfig;
+pub use nets::usb::{UsbCycleOutcome, UsbCycleReport};
 pub use wire::{
     ArmPosition, BatteryState, BleCharacteristic, BleDevice, BleDeviceInfo, BleService,
     BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxLock,

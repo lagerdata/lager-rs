@@ -11,13 +11,23 @@ use crate::wire::lenient;
 
 /// The effective I2C configuration the box reports after `configure`.
 #[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
 pub struct I2cEffectiveConfig {
-    /// Bus frequency in Hz.
+    /// Bus frequency in Hz, as configured.
     #[serde(default, deserialize_with = "lenient::opt_i64")]
     pub frequency_hz: Option<i64>,
+    /// The clock the hardware actually runs, which can be below the request
+    /// on an adapter with a coarse clock divider such as a LabJack U3 (box
+    /// >= 0.47.0; `None` before).
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub achieved_frequency_hz: Option<i64>,
     /// Whether internal pull-ups are enabled.
     #[serde(default, deserialize_with = "lenient::opt_bool")]
     pub pull_ups: Option<bool>,
+    /// What the box warned about while configuring (box >= 0.49.0; empty
+    /// when none).
+    #[serde(skip)]
+    pub warnings: Vec<String>,
 }
 
 pub(crate) mod ops {
@@ -25,9 +35,18 @@ pub(crate) mod ops {
 
     use super::I2cEffectiveConfig;
     use crate::error::{Error, Result};
-    use crate::wire::{as_i64, net_command, unit, value_as, CommandResponse, Op, Timeout};
+    use crate::wire::{
+        as_i64, net_command, unit, value_as, warnings, CommandResponse, Op, Timeout,
+    };
 
     const ROLE: &str = "i2c";
+
+    fn parse_config(resp: CommandResponse) -> Result<I2cEffectiveConfig> {
+        let warnings = warnings(&resp);
+        let mut config: I2cEffectiveConfig = value_as(resp)?;
+        config.warnings = warnings;
+        Ok(config)
+    }
 
     fn parse_bytes(resp: CommandResponse) -> Result<Vec<u8>> {
         let arr = resp
@@ -79,7 +98,7 @@ pub(crate) mod ops {
                 Value::Object(params),
                 Timeout::Default,
             ),
-            parse: value_as::<I2cEffectiveConfig>,
+            parse: parse_config,
         }
     }
 
