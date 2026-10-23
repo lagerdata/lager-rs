@@ -10,6 +10,18 @@ All notable changes to the `lager-net` crate are documented here.
   client's API is unchanged: no `reqwest` type appears in it. A project that
   also depends on `reqwest` 0.12 directly now builds both versions.
 
+### Fixed
+
+- **`DebugNet::rtt()` yields only the target's RTT output** (#5). Before,
+  the `RttStream` also carried the HTTP chunk framing: hex chunk sizes and
+  `\r\n` terminators were mixed into the firmware output, so a
+  `BufReader::lines()` loop saw lines such as `"64"` and `""` that the
+  target never printed. The box debug service sends its RTT stream as
+  chunked under an `HTTP/1.0` status line, where chunked encoding is not
+  defined, so the HTTP client passed the framing through. The crate now
+  decodes it. Works against every box; no box update is needed.
+  `rtt_interactive()` (feature `rtt`) was not affected.
+
 ## [0.7.0] - 2026-10-15
 
 ### Changed
