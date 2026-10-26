@@ -278,6 +278,15 @@ pub(crate) mod ops {
         )
     }
 
+    /// Stop the core where it is, without touching nRESET (OpenOCD only).
+    pub(crate) fn halt(net: &Value) -> (String, Value, Timeout) {
+        (
+            "/debug/halt".into(),
+            debug_body(net, json!({})),
+            RESET_TIMEOUT,
+        )
+    }
+
     pub(crate) fn erase(net: &Value) -> (String, Value, Timeout) {
         (
             "/debug/erase".into(),
@@ -481,6 +490,24 @@ impl DebugNet<'_> {
         self.call(&path, body, timeout).map(|_| ())
     }
 
+    /// Halt the core where it is, without a reset (box newer than 0.59.0,
+    /// OpenOCD nets only).
+    ///
+    /// Unlike `reset(true)`, which resets and then halts at the reset
+    /// vector, this never pulses nRESET, which matters on a part executing
+    /// in place out of QSPI. Checks the debug service's features first and
+    /// fails with [`Error::UnsupportedByBox`] on a box without the route.
+    /// A J-Link net fails with [`Error::Box`] (HTTP 400): J-Link has no
+    /// halt-in-place primitive, so connect with a halt-first `.JLinkScript`
+    /// instead. So does a net with no running debugger connection.
+    pub fn halt(&self) -> Result<()> {
+        let (status, health) = self.client.execute_debug(&wire::debug_health_request())?;
+        wire::require_debug_feature(status, health, "halt", "newer than 0.59.0")?;
+        let net = self.net_record()?;
+        let (path, body, timeout) = ops::halt(&net);
+        self.call(&path, body, timeout).map(|_| ())
+    }
+
     /// Erase the target flash: the whole chip, or the part family's default
     /// range on parts where the box defines one (DA1469x, nRF5340). The
     /// report says which range was erased (box >= 0.50.0).
@@ -499,7 +526,7 @@ impl DebugNet<'_> {
     /// outside what it can erase on the part.
     pub fn erase_range(&self, start: u64, size: u64) -> Result<EraseReport> {
         let (status, health) = self.client.execute_debug(&wire::debug_health_request())?;
-        wire::require_debug_feature(status, health, "erase_range", "0.50.0")?;
+        wire::require_debug_feature(status, health, "erase_range", ">= 0.50.0")?;
         let net = self.net_record()?;
         let (path, body, timeout) = ops::erase_range(&net, start, size);
         let resp = self.call(&path, body, timeout)?;
@@ -756,6 +783,18 @@ impl AsyncDebugNet<'_> {
         self.call(&path, body, timeout).await.map(|_| ())
     }
 
+    /// Halt the core without a reset. See [`DebugNet::halt`].
+    pub async fn halt(&self) -> Result<()> {
+        let (status, health) = self
+            .client
+            .execute_debug(&wire::debug_health_request())
+            .await?;
+        wire::require_debug_feature(status, health, "halt", "newer than 0.59.0")?;
+        let net = self.net_record().await?;
+        let (path, body, timeout) = ops::halt(&net);
+        self.call(&path, body, timeout).await.map(|_| ())
+    }
+
     /// Erase the target flash. See [`DebugNet::erase`].
     pub async fn erase(&self) -> Result<EraseReport> {
         let net = self.net_record().await?;
@@ -770,7 +809,7 @@ impl AsyncDebugNet<'_> {
             .client
             .execute_debug(&wire::debug_health_request())
             .await?;
-        wire::require_debug_feature(status, health, "erase_range", "0.50.0")?;
+        wire::require_debug_feature(status, health, "erase_range", ">= 0.50.0")?;
         let net = self.net_record().await?;
         let (path, body, timeout) = ops::erase_range(&net, start, size);
         let resp = self.call(&path, body, timeout).await?;

@@ -510,6 +510,92 @@ fn erase_range_never_erases_on_a_box_without_the_feature() {
 }
 
 #[test]
+fn halt_sends_the_net_when_the_service_lists_the_feature() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let health = server.mock(|when, then| {
+        when.method(GET).path("/health");
+        then.status(200).json_body(json!({
+            "status": "healthy", "version": "1.0.0",
+            "features": ["erase_range", "halt"], "uptime": 12.5
+        }));
+    });
+    let halt = server.mock(|when, then| {
+        when.method(POST)
+            .path("/debug/halt")
+            .json_body(json!({"net": debug_record()}));
+        then.status(200).json_body(json!({
+            "status": "halt_complete", "output": [], "backend": "openocd"
+        }));
+    });
+
+    let lager = client(&server);
+    lager.debug("debug1").halt().unwrap();
+    health.assert();
+    halt.assert();
+}
+
+#[test]
+fn halt_sends_nothing_to_a_box_without_the_feature() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/health");
+        then.status(200).json_body(json!({
+            "status": "healthy", "version": "1.0.0",
+            "features": ["erase_range"], "uptime": 3.0
+        }));
+    });
+    let halt = server.mock(|when, then| {
+        when.method(POST).path("/debug/halt");
+        then.status(200)
+            .json_body(json!({"status": "halt_complete"}));
+    });
+
+    let lager = client(&server);
+    match lager.debug("debug1").halt().unwrap_err() {
+        Error::UnsupportedByBox { message } => {
+            assert!(message.contains("'halt'"), "{message}");
+            assert!(message.contains("newer than 0.59.0"), "{message}");
+        }
+        other => panic!("expected Error::UnsupportedByBox, got {other:?}"),
+    }
+    halt.assert_hits(0);
+}
+
+#[test]
+fn halt_on_a_jlink_net_is_the_box_refusal() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/health");
+        then.status(200).json_body(json!({
+            "status": "healthy", "version": "1.0.0", "features": ["halt"]
+        }));
+    });
+    server.mock(|when, then| {
+        when.method(POST).path("/debug/halt");
+        then.status(400).json_body(json!({
+            "error": "halt is OpenOCD-only, and debug net 'debug1' uses the J-Link \
+                      backend, which has no halt-in-place primitive (its resets reset \
+                      first). Connect with a halt-first .JLinkScript instead.",
+            "status": "error"
+        }));
+    });
+
+    let lager = client(&server);
+    match lager.debug("debug1").halt().unwrap_err() {
+        Error::Box {
+            status: 400,
+            message,
+        } => {
+            assert!(message.contains(".JLinkScript"), "{message}")
+        }
+        other => panic!("expected Error::Box 400, got {other:?}"),
+    }
+}
+
+#[test]
 fn status_probed_asks_for_a_target_read_and_parses_the_tri_state() {
     let server = MockServer::start();
     mock_nets_list(&server);

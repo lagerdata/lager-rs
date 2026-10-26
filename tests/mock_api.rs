@@ -3236,6 +3236,30 @@ mod async_parity {
     }
 
     #[tokio::test]
+    async fn async_halt_posts_to_debug_halt_when_listed() {
+        let server = MockServer::start_async().await;
+        let lager = async_debug_client(&server).await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/health");
+                then.status(200).json_body(
+                    json!({"status": "healthy", "version": "1.0.0", "features": ["halt"]}),
+                );
+            })
+            .await;
+        let halt = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/debug/halt");
+                then.status(200).json_body(
+                    json!({"status": "halt_complete", "output": [], "backend": "openocd"}),
+                );
+            })
+            .await;
+        lager.debug("debug1").halt().await.unwrap();
+        halt.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn async_flash_that_programmed_nothing_is_an_error() {
         let server = MockServer::start_async().await;
         let lager = async_debug_client(&server).await;

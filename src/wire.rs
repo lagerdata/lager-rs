@@ -358,7 +358,7 @@ impl DebugHealth {
 }
 
 /// Interpret the debug service's `/health`, and refuse unless it lists
-/// `feature`. `since` names the first box version that has it.
+/// `feature`. `since` names the box versions that have it (`">= 0.50.0"`).
 pub fn require_debug_feature(status: u16, body: Value, feature: &str, since: &str) -> Result<()> {
     let health: DebugHealth = serde_json::from_value(parse_debug(status, body)?)?;
     if health.supports(feature) {
@@ -366,7 +366,7 @@ pub fn require_debug_feature(status: u16, body: Value, feature: &str, since: &st
     } else {
         Err(Error::UnsupportedByBox {
             message: format!(
-                "the box debug service does not support '{feature}' (box software >= {since})"
+                "the box debug service does not support '{feature}' (box software {since})"
             ),
         })
     }
