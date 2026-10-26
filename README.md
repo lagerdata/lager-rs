@@ -125,8 +125,17 @@ newer surfaces need a newer box image and fail with
 | `DebugNet::rtt_interactive()` *(feature `rtt`)* | >= 0.35.0 |
 | `UsbPort::cycle()` / `recover()` | >= 0.39.0 |
 | `ConnectOptions::halt` honored on the OpenOCD backend | >= 0.43.0 |
+| `Webcam::snapshot()` | >= 0.47.0 |
+| `DebugNet::erase_range()` | >= 0.50.0 (checked against the debug service's `/health` features before anything is erased) |
 | `scope()` | >= 0.55.0 |
-| `hsm()` | >= 0.59.0 |
+| `hsm()` / `custom()` | >= 0.59.0 |
+| `Arm::get_acceleration()` / `set_acceleration_keep_retract()` | newer than 0.59.0 |
+
+Fields an older box does not send come back as `None` rather than failing:
+`DebugStatus` / `DebugInfo` `gdbserver_running` and `target_attached`
+(0.44.0), SPI/I2C `achieved_frequency_hz` (0.47.0), `UsbCycleReport::outcome`
+(0.49.0), `NetState::enabled` (0.53.0), and the `Arm::set_acceleration()`
+readback (newer than 0.59.0).
 
 ## Features
 
