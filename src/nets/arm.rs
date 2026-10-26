@@ -146,7 +146,7 @@ pub(crate) mod ops {
         }
     }
 
-    /// A box newer than 0.59.0 answers with the arm's readback; older boxes
+    /// A box >= 0.60.0 answers with the arm's readback; older boxes
     /// send no value.
     fn parse_readback(resp: CommandResponse) -> Result<Option<ArmAcceleration>> {
         match resp.value {
@@ -176,10 +176,10 @@ pub(crate) mod ops {
         }
     }
 
-    /// The arm actions a box newer than 0.59.0 added: `get_acceleration`,
+    /// The arm actions box 0.60.0 added: `get_acceleration`,
     /// and `set_acceleration` without a retract value.
     pub(crate) fn acceleration_compat(err: Error) -> Error {
-        let err = crate::wire::unknown_action_compat(err, "get_acceleration", "newer than 0.59.0");
+        let err = crate::wire::unknown_action_compat(err, "get_acceleration", ">= 0.60.0");
         match err {
             Error::Box {
                 status: 400,
@@ -189,7 +189,7 @@ pub(crate) mod ops {
             {
                 Error::UnsupportedByBox {
                     message: "set_acceleration without a retract value requires box \
-                              software newer than 0.59.0; pass all three values"
+                              software >= 0.60.0; pass all three values"
                         .to_string(),
                 }
             }
@@ -238,7 +238,7 @@ impl Arm<'_> {
     /// Read the arm's print, travel and retract acceleration (mm/s², from
     /// its settings report).
     ///
-    /// Requires box software newer than 0.59.0; older boxes fail with
+    /// Requires box software >= 0.60.0; older boxes fail with
     /// [`crate::Error::UnsupportedByBox`].
     pub fn get_acceleration(&self) -> crate::error::Result<ArmAcceleration> {
         self.client
@@ -267,7 +267,7 @@ impl Arm<'_> {
 
     /// Set print and travel acceleration, leaving retract as it is.
     ///
-    /// Requires box software newer than 0.59.0; older boxes fail with
+    /// Requires box software >= 0.60.0; older boxes fail with
     /// [`crate::Error::UnsupportedByBox`].
     pub fn set_acceleration_keep_retract(
         &self,

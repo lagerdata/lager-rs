@@ -556,7 +556,7 @@ fn halt_sends_nothing_to_a_box_without_the_feature() {
     match lager.debug("debug1").halt().unwrap_err() {
         Error::UnsupportedByBox { message } => {
             assert!(message.contains("'halt'"), "{message}");
-            assert!(message.contains("newer than 0.59.0"), "{message}");
+            assert!(message.contains(">= 0.60.0"), "{message}");
         }
         other => panic!("expected Error::UnsupportedByBox, got {other:?}"),
     }

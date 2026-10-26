@@ -889,7 +889,7 @@ pub struct BoxCapabilities {
     #[serde(default, rename = "customDrivers")]
     pub custom_drivers: bool,
     /// Whether a custom driver can declare Python packages for the box to
-    /// install (box > 0.59.0). Not used by this crate.
+    /// install (box >= 0.60.0). Not used by this crate.
     #[serde(default, rename = "customDriverDeps")]
     pub custom_driver_deps: bool,
     /// Whether the box serves `GET|PUT /nets/<name>/metadata` (box >=

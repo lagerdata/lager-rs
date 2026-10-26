@@ -20,7 +20,7 @@ All notable changes to the `lager-net` crate are documented here.
   is running).
 - **`DebugNet::halt()`** stops the core where it is without pulsing nRESET,
   unlike `reset(true)`, which matters on a part executing in place out of
-  QSPI (OpenOCD nets; box newer than 0.59.0). The crate checks the debug
+  QSPI (OpenOCD nets; box >= 0.60.0). The crate checks the debug
   service's `/health` features first and fails with
   `Error::UnsupportedByBox` on a box without the route. A J-Link net gets
   the box's 400 pointing at a halt-first `.JLinkScript`.
@@ -41,7 +41,7 @@ All notable changes to the `lager-net` crate are documented here.
   (box >= 0.47.0), and **`Webcam::start_as(source, started_by)`** records who
   started a stream, which `WebcamStatus::source` / `started_by` report.
 - **`Arm::get_acceleration()`** and **`Arm::set_acceleration_keep_retract()`**
-  (box newer than 0.59.0). `Arm::set_acceleration()` now returns the arm's
+  (box >= 0.60.0). `Arm::set_acceleration()` now returns the arm's
   readback as `Option<ArmAcceleration>` (`None` from a box at 0.59.0 or
   older), so a value the arm did not take shows up.
 - **`UsbPort::cycle_report()`** returns the box's `outcome` with the result

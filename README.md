@@ -129,13 +129,14 @@ newer surfaces need a newer box image and fail with
 | `DebugNet::erase_range()` | >= 0.50.0 (checked against the debug service's `/health` features before anything is erased) |
 | `scope()` | >= 0.55.0 |
 | `hsm()` / `custom()` | >= 0.59.0 |
-| `Arm::get_acceleration()` / `set_acceleration_keep_retract()` | newer than 0.59.0 |
+| `Arm::get_acceleration()` / `set_acceleration_keep_retract()` | >= 0.60.0 |
+| `DebugNet::halt()` | >= 0.60.0 (OpenOCD nets; checked against the debug service's `/health` features) |
 
 Fields an older box does not send come back as `None` rather than failing:
 `DebugStatus` / `DebugInfo` `gdbserver_running` and `target_attached`
 (0.44.0), SPI/I2C `achieved_frequency_hz` (0.47.0), `UsbCycleReport::outcome`
 (0.49.0), `NetState::enabled` (0.53.0), and the `Arm::set_acceleration()`
-readback (newer than 0.59.0).
+readback (0.60.0).
 
 ## Features
 
@@ -292,8 +293,8 @@ plain-text consoles work with `wait_for` directly.
 0.43.0), and per-connection `jlink_script` / `openocd_config` contents that
 override a script saved on the net (an OpenOCD override must be a complete
 cfg that selects the adapter driver). For halt-in-place, OpenOCD's bare
-`halt` with no nRESET pulse, call `debug.halt()` (OpenOCD nets, box newer
-than 0.59.0; an older box fails with `Error::UnsupportedByBox` before
+`halt` with no nRESET pulse, call `debug.halt()` (OpenOCD nets, box >=
+0.60.0; an older box fails with `Error::UnsupportedByBox` before
 anything reaches the probe).
 
 If the debug service is reached through an SSH tunnel, point the crate at it
