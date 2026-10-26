@@ -19,6 +19,7 @@ use crate::nets::dfu::Dfu;
 use crate::nets::eload::Eload;
 use crate::nets::energy::EnergyAnalyzer;
 use crate::nets::gpio::Gpio;
+use crate::nets::hsm::Hsm;
 use crate::nets::i2c::I2c;
 use crate::nets::router::Router;
 use crate::nets::scope::Scope;
@@ -968,9 +969,21 @@ impl LagerBox {
         }
     }
 
-    /// Handle for an oscilloscope net. **Stub:** see [`Scope`].
-    pub fn scope(&self, name: impl Into<String>) -> Scope {
-        Scope::new(name)
+    /// Handle for an oscilloscope net, the instrument or one of its
+    /// channels (box >= 0.55.0). See [`crate::nets::scope`].
+    pub fn scope(&self, name: impl Into<String>) -> Scope<'_> {
+        Scope {
+            client: self,
+            name: name.into(),
+        }
+    }
+
+    /// Handle for a YubiHSM 2 net (box >= 0.59.0). See [`crate::nets::hsm`].
+    pub fn hsm(&self, name: impl Into<String>) -> Hsm<'_> {
+        Hsm {
+            client: self,
+            name: name.into(),
+        }
     }
 
     /// Open a streaming UART session on a UART net.

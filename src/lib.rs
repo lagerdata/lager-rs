@@ -84,10 +84,9 @@
 //!
 //! # Not yet on the HTTP API
 //!
-//! Oscilloscope workflows are not yet exposed on any box HTTP API;
-//! [`nets::scope::Scope`] ships as a documented stub returning
-//! [`Error::NotSupportedByBox`]. See `MISSING_ENDPOINTS.md` in the crate
-//! repository.
+//! Scope trace capture and logic-analyzer nets are not on any box HTTP API
+//! yet; [`nets::scope`] covers everything else a scope does. See
+//! `MISSING_ENDPOINTS.md` in the crate repository.
 
 #![deny(missing_docs)]
 
@@ -139,7 +138,8 @@ pub use nets::debug::{ConnectOptions, FirmwareKind, RttOptions};
 pub use nets::dfu::DfuOptions;
 pub use nets::eload::EloadMode;
 pub use nets::gpio::{Level, WaitForLevelOptions};
-pub use nets::scope::Scope;
+pub use nets::hsm::{GenerateKey, GeneratedKey, HsmAuth, HsmInfo, HsmObject};
+pub use nets::scope::{EdgeTrigger, Measurement, Measurements, TriggerMode, TriggerSettings};
 pub use nets::spi::{BitOrder, CsActive, CsMode, SpiConfig, SpiOptions, SpiTransfer};
 
 /// Debug-service response types.
@@ -152,17 +152,18 @@ pub use wire::{
 pub use nets::{
     adc::Adc, arm::Arm, battery::Battery, ble::Ble, blufi::Blufi, custom::CustomNet, dac::Dac,
     debug::DebugNet, debug::RttStream, dfu::Dfu, eload::Eload, energy::EnergyAnalyzer, gpio::Gpio,
-    i2c::I2c, router::Router, solar::Solar, spi::Spi, supply::Supply, thermocouple::Thermocouple,
-    usb::UsbPort, watt::WattMeter, webcam::Webcam, wifi::Wifi,
+    hsm::Hsm, i2c::I2c, router::Router, scope::Scope, solar::Solar, spi::Spi, supply::Supply,
+    thermocouple::Thermocouple, usb::UsbPort, watt::WattMeter, webcam::Webcam, wifi::Wifi,
 };
 
 #[cfg(feature = "async")]
 pub use nets::{
     adc::AsyncAdc, arm::AsyncArm, battery::AsyncBattery, ble::AsyncBle, blufi::AsyncBlufi,
     custom::AsyncCustomNet, dac::AsyncDac, debug::AsyncDebugNet, dfu::AsyncDfu, eload::AsyncEload,
-    energy::AsyncEnergyAnalyzer, gpio::AsyncGpio, i2c::AsyncI2c, router::AsyncRouter,
-    solar::AsyncSolar, spi::AsyncSpi, supply::AsyncSupply, thermocouple::AsyncThermocouple,
-    usb::AsyncUsbPort, watt::AsyncWattMeter, webcam::AsyncWebcam, wifi::AsyncWifi,
+    energy::AsyncEnergyAnalyzer, gpio::AsyncGpio, hsm::AsyncHsm, i2c::AsyncI2c,
+    router::AsyncRouter, scope::AsyncScope, solar::AsyncSolar, spi::AsyncSpi, supply::AsyncSupply,
+    thermocouple::AsyncThermocouple, usb::AsyncUsbPort, watt::AsyncWattMeter, webcam::AsyncWebcam,
+    wifi::AsyncWifi,
 };
 
 #[cfg(feature = "uart")]

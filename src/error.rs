@@ -75,7 +75,9 @@ pub enum Error {
     Decode(String),
     /// The net type exists in the Lager Python API but its box endpoint is
     /// not yet available on the `:9000` HTTP API, so this crate ships it as a
-    /// documented stub. See `MISSING_ENDPOINTS.md` in the crate repository.
+    /// documented stub. No net type returns this since the scope stub became
+    /// a real net ([`crate::nets::scope`]) in 0.8.0; the variant stays so matches
+    /// on it keep compiling.
     NotSupportedByBox {
         /// Which net/feature was invoked (e.g. `"debug"`).
         feature: &'static str,

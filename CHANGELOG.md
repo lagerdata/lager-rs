@@ -49,6 +49,19 @@ All notable changes to the `lager-net` crate are documented here.
 - **`BoxCapabilities` gains `custom_drivers`, `custom_driver_deps`,
   `net_metadata_sync`, `box_metadata_sync`, `bench_manifest`,
   `nets_state_enabled` and `nets_state_stream`.**
+- **`lager.scope(name)` drives oscilloscope nets** (box >= 0.55.0), where it
+  was a stub that returned `Error::NotSupportedByBox`. A channel net takes
+  `enable`/`disable`, `set_scale`, `set_coupling`, `set_probe`,
+  `set_offset` and their readbacks; either net takes `set_timebase`,
+  `set_time_offset`, `trigger_edge` (only the fields set are applied),
+  `trigger()`, `run`/`single`/`stop`, `force_trigger` and `autoscale`.
+  `measure(Measurement)` returns `None` for a quantity the capture lacks,
+  and `measure_all()` reads every quantity from one capture. `command()`
+  reaches the remaining scope actions. Trace capture is not on the HTTP API.
+- **`lager.hsm(name)` drives a YubiHSM 2 net** (box >= 0.59.0): `info`,
+  `generate`, `sign`, `public_key`, `objects`, `delete`, `blink` and
+  `reset`. Credentials go in `HsmAuth`, whose `Debug` output leaves out the
+  password. Tested against a mock box only.
 
 ### Changed
 
@@ -72,6 +85,11 @@ All notable changes to the `lager-net` crate are documented here.
   `BoxStatus`, `NetState`, `WebcamStatus`, `WebcamStream`,
   `SpiEffectiveConfig` and `I2cEffectiveConfig` are now `#[non_exhaustive]`,
   so fields the box adds later are not breaking changes.
+
+- **Behavior change:** `Scope` now borrows its client like every other net
+  handle (`Scope<'_>`, plus `AsyncScope<'_>` from `AsyncLagerBox::scope`),
+  and the stub's `capture()` and `measure(&str)` are gone: use
+  `measure(Measurement)`.
 
 - **The `async` feature now uses `reqwest` 0.13** (was 0.12). The async
   client's API is unchanged: no `reqwest` type appears in it. A project that

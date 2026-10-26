@@ -21,9 +21,10 @@ use crate::nets::dfu::AsyncDfu;
 use crate::nets::eload::AsyncEload;
 use crate::nets::energy::AsyncEnergyAnalyzer;
 use crate::nets::gpio::AsyncGpio;
+use crate::nets::hsm::AsyncHsm;
 use crate::nets::i2c::AsyncI2c;
 use crate::nets::router::AsyncRouter;
-use crate::nets::scope::Scope;
+use crate::nets::scope::AsyncScope;
 use crate::nets::solar::AsyncSolar;
 use crate::nets::spi::AsyncSpi;
 use crate::nets::supply::AsyncSupply;
@@ -819,9 +820,21 @@ impl AsyncLagerBox {
         }
     }
 
-    /// Handle for an oscilloscope net. **Stub:** see [`Scope`].
-    pub fn scope(&self, name: impl Into<String>) -> Scope {
-        Scope::new(name)
+    /// Handle for an oscilloscope net, the instrument or one of its
+    /// channels (box >= 0.55.0). See [`crate::nets::scope`].
+    pub fn scope(&self, name: impl Into<String>) -> AsyncScope<'_> {
+        AsyncScope {
+            client: self,
+            name: name.into(),
+        }
+    }
+
+    /// Handle for a YubiHSM 2 net (box >= 0.59.0). See [`crate::nets::hsm`].
+    pub fn hsm(&self, name: impl Into<String>) -> AsyncHsm<'_> {
+        AsyncHsm {
+            client: self,
+            name: name.into(),
+        }
     }
 }
 

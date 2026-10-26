@@ -17,6 +17,7 @@ pub mod dfu;
 pub mod eload;
 pub mod energy;
 pub mod gpio;
+pub mod hsm;
 pub mod i2c;
 pub mod router;
 #[cfg(feature = "rtt")]
