@@ -7,7 +7,8 @@ and run it with `cargo test` — no Python required.
 The crate is a pure HTTP/JSON client of the Lager box's API (port 9000):
 power supplies, battery simulators, e-loads, solar simulators, GPIO, ADC,
 DAC, thermocouples, watt meters, energy analyzers, SPI, I2C, USB hub ports,
-robot arms, webcams, routers, and streaming UART — plus the box-level
+robot arms, webcams, routers, oscilloscopes, YubiHSM 2 HSMs, and
+streaming UART — plus the box-level
 capabilities (its own BLE adapter, WiFi interface, BluFi ESP32 provisioning,
 USB bus enumeration, box-side `dfu-util` flashing, and box lock/reservation).
 Debug-probe nets (flash / erase / reset / memory reads / RTT) talk to the
@@ -71,6 +72,8 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | `UsbPort` | `lager.usb(name)` | `enable`/`disable`/`toggle`/`state`, `cycle` (off-wait-on, reports re-enumeration), `recover` |
 | `Arm` | `lager.arm(name)` | `position`, `move_to`/`move_by`, `go_home`, motor enable/disable, `set_acceleration` |
 | `Webcam` | `lager.webcam(name)` | `start`/`stop` MJPEG stream, `url`, `status` |
+| `Scope` | `lager.scope(name)` | channel `enable`, `set_scale`/`set_coupling`/`set_probe`/`set_offset`, `set_timebase`, `trigger_edge`/`trigger`, `run`/`single`/`stop`, `measure(Measurement::Frequency)`, `measure_all` |
+| `Hsm` | `lager.hsm(name)` | `info`, `generate`, `sign`, `public_key`, `objects`, `delete`, `reset` (credentials in `HsmAuth`) |
 | `Router` | `lager.router(name)` | `system_info`, interfaces/clients/leases, `block_internet`, generic `command(action, params)` |
 | `DebugNet` | `lager.debug(name)` | `connect`, `flash`, `erase`, `reset`, `read_memory`, `info`/`status`, `rtt` (blocking), `rtt_interactive` *(feature `rtt`)* |
 | `Uart` | `lager.uart(name)?` *(feature `uart`)* | streaming `read`, non-blocking `try_read`, `write`, `wait_for(b"boot ok", ...)` |
@@ -122,6 +125,8 @@ newer surfaces need a newer box image and fail with
 | `DebugNet::rtt_interactive()` *(feature `rtt`)* | >= 0.35.0 |
 | `UsbPort::cycle()` / `recover()` | >= 0.39.0 |
 | `ConnectOptions::halt` honored on the OpenOCD backend | >= 0.43.0 |
+| `scope()` | >= 0.55.0 |
+| `hsm()` | >= 0.59.0 |
 
 ## Features
 
@@ -227,7 +232,7 @@ Everything returns `lager::Result<T>` with a single `Error` enum:
 - `Box { status, message }` — the box refused or the hardware failed
 - `UnsupportedByBox` — the box image predates this endpoint (HTTP 501, a missing route, or a pre-0.29.0 `state` rejection); the message names the box version required
 - `AuthRequired` — the box's gateway wants a bearer token and none is available: run `lager login <auth_url>` or set `LAGER_GATEWAY_TOKEN`
-- `NotSupportedByBox` — the net type is a documented stub (see below)
+- `NotSupportedByBox` — kept for compatibility; no net type returns it now
 
 ## Firmware, flashing, and RTT
 
@@ -311,10 +316,10 @@ the box refuses the key rather than storing a limit nothing enforces.
 
 ## Not yet on the HTTP API
 
-Oscilloscope / logic-analyzer workflows are not exposed on any box HTTP API
-yet. `Scope` ships as a documented stub whose methods return
-`Error::NotSupportedByBox`; see
-[`MISSING_ENDPOINTS.md`](MISSING_ENDPOINTS.md) for the endpoint sketch.
+Scope trace capture (the waveform stream behind the box's `/scope` page) and
+logic-analyzer nets are not on the box HTTP API yet. `Scope` covers channel
+setup, timebase, trigger, acquisition control and measurements. See
+[`MISSING_ENDPOINTS.md`](MISSING_ENDPOINTS.md).
 
 ## Hardware smoke tests
 

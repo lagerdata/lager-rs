@@ -9,8 +9,8 @@
 
 use httpmock::prelude::*;
 use lager::{
-    BatteryMode, EloadMode, Error, LagerBox, Level, SafetyLimits, SpiConfig, SpiOptions,
-    WaitForLevelOptions,
+    BatteryMode, EdgeTrigger, EloadMode, Error, GenerateKey, HsmAuth, LagerBox, Level, Measurement,
+    SafetyLimits, SpiConfig, SpiOptions, TriggerMode, WaitForLevelOptions,
 };
 use serde_json::json;
 
@@ -2194,19 +2194,6 @@ fn unreachable_box_is_connection_error() {
     ));
 }
 
-#[test]
-fn scope_is_a_stub() {
-    let server = MockServer::start();
-    let lager = client(&server);
-    assert!(matches!(
-        lager.scope("scope1").capture().unwrap_err(),
-        Error::NotSupportedByBox {
-            feature: "scope",
-            ..
-        }
-    ));
-}
-
 // ---------------------------------------------------------------------------
 // Per-net safety limits (PUT /nets/<name>/safety-limits, box >= 0.35.0)
 // ---------------------------------------------------------------------------
@@ -2745,6 +2732,344 @@ fn custom_net_busy_is_a_box_error_with_its_status() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Scope (scope / scope-channel roles, box >= 0.55.0)
+// ---------------------------------------------------------------------------
+
+/// Mock one scope action on `scope-ch1`, answering with `value` (or none).
+fn scope_mock<'a>(
+    server: &'a MockServer,
+    action: &str,
+    params: serde_json::Value,
+    value: Option<serde_json::Value>,
+) -> httpmock::Mock<'a> {
+    let mut body = json!({"success": true, "action": action, "message": "ok"});
+    if let Some(v) = value {
+        body["value"] = v;
+    }
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "scope-ch1", "role": "scope", "action": action, "params": params
+        }));
+        then.status(200).json_body(body);
+    })
+}
+
+#[test]
+fn scope_channel_settings_send_the_box_params() {
+    let server = MockServer::start();
+    let mocks = [
+        scope_mock(&server, "enable_net", json!({}), None),
+        scope_mock(&server, "get_net_enabled", json!({}), Some(json!(true))),
+        scope_mock(&server, "set_scale", json!({"volts_per_div": 0.5}), None),
+        scope_mock(&server, "get_scale", json!({}), Some(json!(0.5))),
+        scope_mock(
+            &server,
+            "set_timebase",
+            json!({"seconds_per_div": 0.001}),
+            None,
+        ),
+        scope_mock(&server, "get_timebase", json!({}), Some(json!(0.001))),
+        scope_mock(&server, "set_coupling", json!({"mode": "ac"}), None),
+        scope_mock(&server, "get_coupling", json!({}), Some(json!("ac"))),
+        scope_mock(&server, "set_probe", json!({"ratio": 10.0}), None),
+        scope_mock(&server, "get_probe", json!({}), Some(json!(10.0))),
+        scope_mock(&server, "set_offset", json!({"offset": -0.25}), None),
+        scope_mock(&server, "get_offset", json!({}), Some(json!(-0.25))),
+        scope_mock(&server, "set_time_offset", json!({"offset": 0.0002}), None),
+        scope_mock(&server, "get_time_offset", json!({}), Some(json!(0.0002))),
+        scope_mock(&server, "start_single", json!({}), None),
+        scope_mock(&server, "stop_capture", json!({}), None),
+    ];
+    let lager = client(&server);
+    let ch = lager.scope("scope-ch1");
+    ch.enable().unwrap();
+    assert!(ch.is_enabled().unwrap());
+    ch.set_scale(0.5).unwrap();
+    assert_eq!(ch.scale().unwrap(), 0.5);
+    ch.set_timebase(0.001).unwrap();
+    assert_eq!(ch.timebase().unwrap(), 0.001);
+    ch.set_coupling("ac").unwrap();
+    assert_eq!(ch.coupling().unwrap(), "ac");
+    ch.set_probe(10.0).unwrap();
+    assert_eq!(ch.probe().unwrap(), 10.0);
+    ch.set_offset(-0.25).unwrap();
+    assert_eq!(ch.offset().unwrap(), -0.25);
+    ch.set_time_offset(0.0002).unwrap();
+    assert_eq!(ch.time_offset().unwrap(), 0.0002);
+    ch.single().unwrap();
+    ch.stop().unwrap();
+    for m in mocks {
+        m.assert();
+    }
+}
+
+#[test]
+fn scope_trigger_edge_sends_only_the_fields_that_are_set() {
+    let server = MockServer::start();
+    let m = scope_mock(
+        &server,
+        "trigger_edge",
+        json!({"level": 1.2, "mode": "normal"}),
+        None,
+    );
+    client(&server)
+        .scope("scope-ch1")
+        .trigger_edge(&EdgeTrigger {
+            level: Some(1.2),
+            mode: Some(TriggerMode::Normal),
+            ..Default::default()
+        })
+        .unwrap();
+    m.assert();
+}
+
+#[test]
+fn scope_trigger_reads_back_what_the_instrument_has() {
+    let server = MockServer::start();
+    scope_mock(
+        &server,
+        "get_trigger",
+        json!({}),
+        Some(json!({"mode": "normal", "source": "CHAN1", "slope": "rising", "level": 1.2})),
+    );
+    let t = client(&server).scope("scope-ch1").trigger().unwrap();
+    assert_eq!(t.mode.as_deref(), Some("normal"));
+    assert_eq!(t.source.as_deref(), Some("CHAN1"));
+    assert_eq!(t.slope.as_deref(), Some("rising"));
+    assert_eq!(t.level, Some(1.2));
+    assert_eq!(t.holdoff, None);
+}
+
+#[test]
+fn scope_measure_is_none_when_the_capture_lacks_the_quantity() {
+    let server = MockServer::start();
+    scope_mock(&server, "measure_freq", json!({}), Some(json!(1000.0)));
+    // The box answers a missing quantity with success and no value.
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "scope-ch1", "role": "scope", "action": "measure_period", "params": {}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "measure_period",
+            "message": "period is not present in this capture"
+        }));
+    });
+    let lager = client(&server);
+    let ch = lager.scope("scope-ch1");
+    assert_eq!(ch.measure(Measurement::Frequency).unwrap(), Some(1000.0));
+    assert_eq!(ch.measure(Measurement::Period).unwrap(), None);
+}
+
+#[test]
+fn scope_measure_all_reads_the_daemon_field_names() {
+    let server = MockServer::start();
+    scope_mock(
+        &server,
+        "measure_all",
+        json!({}),
+        Some(json!({"vpp": 3.3, "frequency": 1000.0, "duty_cycle_positive": 50.0})),
+    );
+    let all = client(&server).scope("scope-ch1").measure_all().unwrap();
+    assert_eq!(all.get(Measurement::Vpp), Some(3.3));
+    assert_eq!(all.get(Measurement::Frequency), Some(1000.0));
+    assert_eq!(all.get(Measurement::DutyCyclePositive), Some(50.0));
+    assert_eq!(all.get(Measurement::Period), None);
+}
+
+#[test]
+fn scope_channel_action_on_the_instrument_net_is_a_box_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(400).json_body(json!({
+            "success": false,
+            "error": "scope1 is the scope itself, and set_scale acts on one channel -- \
+                      use one of its channel nets: scope1-ch1, scope1-ch2"
+        }));
+    });
+    match client(&server).scope("scope1").set_scale(1.0).unwrap_err() {
+        Error::Box {
+            status: 400,
+            message,
+        } => assert!(message.contains("scope1-ch1"), "{message}"),
+        other => panic!("expected Box 400, got {other:?}"),
+    }
+}
+
+#[test]
+fn scope_on_a_box_before_0_55_is_unsupported() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(501).json_body(json!({
+            "success": false, "error": "Role 'scope' is not supported by /net/command"
+        }));
+    });
+    assert!(matches!(
+        client(&server).scope("scope1").run().unwrap_err(),
+        Error::UnsupportedByBox { .. }
+    ));
+}
+
+#[test]
+fn scope_command_passes_other_actions_through() {
+    let server = MockServer::start();
+    let m = scope_mock(
+        &server,
+        "set_trigger_holdoff",
+        json!({"seconds": 0.001}),
+        None,
+    );
+    let v = client(&server)
+        .scope("scope-ch1")
+        .command("set_trigger_holdoff", json!({"seconds": 0.001}))
+        .unwrap();
+    assert_eq!(v, serde_json::Value::Null);
+    m.assert();
+}
+
+// ---------------------------------------------------------------------------
+// HSM (hsm role, box >= 0.59.0)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hsm_info_sends_no_credentials() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "hsm1", "role": "hsm", "action": "info", "params": {}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "info",
+            "message": "YubiHSM fw 2.4.0, serial 12345678, log 4/62",
+            "value": {"firmware": "2.4.0", "serial": 12345678, "log_used": 4, "log_size": 62,
+                      "part_number": null, "algorithms": ["ec-p256", "ed25519"]}
+        }));
+    });
+    let info = client(&server).hsm("hsm1").info().unwrap();
+    assert_eq!(info.firmware, "2.4.0");
+    assert_eq!(info.serial, 12345678);
+    assert_eq!(info.log_used, 4);
+    assert_eq!(info.part_number, None);
+    assert_eq!(info.algorithms, ["ec-p256", "ed25519"]);
+    m.assert();
+}
+
+#[test]
+fn hsm_generate_and_sign_send_the_login_and_base64() {
+    let server = MockServer::start();
+    let generate = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "hsm1", "role": "hsm", "action": "generate",
+            "params": {"algorithm": "ec-p256", "object_id": 0, "label": "fw",
+                       "auth_key_id": 1, "password": "pw"}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "generate", "message": "Generated ec-p256 key 0x0007",
+            "value": {"id": 7, "public_key_pem": "-----BEGIN PUBLIC KEY-----\n..."}
+        }));
+    });
+    let sign = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "hsm1", "role": "hsm", "action": "sign",
+            "params": {"object_id": 7, "data": "Zm9vYmFy", "mechanism": "ecdsa-sha256",
+                       "auth_key_id": 1, "password": "pw"}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "sign", "message": "Signed with ecdsa-sha256",
+            "value": {"signature": "AP8Q"}
+        }));
+    });
+    let lager = client(&server);
+    let hsm = lager.hsm("hsm1");
+    let auth = HsmAuth::new("pw");
+    let mut spec = GenerateKey::new("ec-p256");
+    spec.label = "fw".to_string();
+    let key = hsm.generate(&auth, &spec).unwrap();
+    assert_eq!(key.id, 7);
+    assert!(key.public_key_pem.starts_with("-----BEGIN PUBLIC KEY-----"));
+    let sig = hsm.sign(&auth, key.id, b"foobar", "ecdsa-sha256").unwrap();
+    assert_eq!(sig, [0x00, 0xff, 0x10]);
+    generate.assert();
+    sign.assert();
+}
+
+#[test]
+fn hsm_objects_delete_and_public_key_use_the_given_auth_key() {
+    let server = MockServer::start();
+    let objects = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "hsm1", "role": "hsm", "action": "objects",
+            "params": {"type": "asymmetric-key", "auth_key_id": 2, "password": "pw2"}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "objects", "message": "1 object(s)",
+            "value": [{"id": 7, "type": "asymmetric-key", "label": "fw", "algorithm": "ec-p256",
+                       "domains": [1], "capabilities": ["sign-ecdsa"], "size": 64, "sequence": 0}]
+        }));
+    });
+    let pubkey = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "hsm1", "role": "hsm", "action": "pubkey",
+            "params": {"object_id": 7, "auth_key_id": 2, "password": "pw2"}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "pubkey", "message": "-----BEGIN PUBLIC KEY-----",
+            "value": "-----BEGIN PUBLIC KEY-----"
+        }));
+    });
+    let delete = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "hsm1", "role": "hsm", "action": "delete",
+            "params": {"object_id": 7, "auth_key_id": 2, "password": "pw2"}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "delete", "message": "Deleted asymmetric-key 0x0007"
+        }));
+    });
+    let lager = client(&server);
+    let hsm = lager.hsm("hsm1");
+    let auth = HsmAuth::with_key(2, "pw2");
+    let objs = hsm.objects(&auth, Some("asymmetric-key"), None).unwrap();
+    assert_eq!(objs.len(), 1);
+    assert_eq!(objs[0].object_type, "asymmetric-key");
+    assert_eq!(objs[0].capabilities, ["sign-ecdsa"]);
+    assert_eq!(
+        hsm.public_key(&auth, 7).unwrap(),
+        "-----BEGIN PUBLIC KEY-----"
+    );
+    hsm.delete(&auth, 7, None).unwrap();
+    objects.assert();
+    pubkey.assert();
+    delete.assert();
+}
+
+#[test]
+fn hsm_refusal_is_a_box_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(400).json_body(json!({
+            "success": false,
+            "error": "RSA keys cannot be generated through the box API, because generation \
+                      can take minutes. Use a lager python script."
+        }));
+    });
+    let err = client(&server)
+        .hsm("hsm1")
+        .generate(&HsmAuth::new("pw"), &GenerateKey::new("rsa2048"))
+        .unwrap_err();
+    assert!(matches!(err, Error::Box { status: 400, .. }), "{err:?}");
+}
+
+#[test]
+fn hsm_auth_debug_leaves_out_the_password() {
+    let shown = format!("{:?}", HsmAuth::with_key(3, "hunter2"));
+    assert!(!shown.contains("hunter2"), "{shown}");
+    assert!(shown.contains("auth_key_id: 3"), "{shown}");
+}
+
 #[cfg(feature = "async")]
 mod async_parity {
     use super::*;
@@ -2935,5 +3260,53 @@ mod async_parity {
             Error::FlashFailed { error, .. } => assert!(error.contains("nothing was programmed")),
             other => panic!("expected Error::FlashFailed, got {other:?}"),
         }
+    }
+    #[tokio::test]
+    async fn async_scope_measure_sends_identical_request() {
+        let server = MockServer::start_async().await;
+        let m = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/net/command").json_body(json!({
+                    "netname": "scope-ch1", "role": "scope", "action": "measure_vpp", "params": {}
+                }));
+                then.status(200).json_body(
+                    json!({"success": true, "action": "measure_vpp", "message": "3.3 V", "value": 3.3}),
+                );
+            })
+            .await;
+        let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();
+        let vpp = lager
+            .scope("scope-ch1")
+            .measure(Measurement::Vpp)
+            .await
+            .unwrap();
+        assert_eq!(vpp, Some(3.3));
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn async_hsm_sign_sends_identical_request() {
+        let server = MockServer::start_async().await;
+        let m = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/net/command").json_body(json!({
+                    "netname": "hsm1", "role": "hsm", "action": "sign",
+                    "params": {"object_id": 7, "data": "Zm9vYmFy", "mechanism": "eddsa",
+                               "auth_key_id": 1, "password": "pw"}
+                }));
+                then.status(200).json_body(json!({
+                    "success": true, "action": "sign", "message": "Signed with eddsa",
+                    "value": {"signature": "AP8Q"}
+                }));
+            })
+            .await;
+        let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();
+        let sig = lager
+            .hsm("hsm1")
+            .sign(&HsmAuth::new("pw"), 7, b"foobar", "eddsa")
+            .await
+            .unwrap();
+        assert_eq!(sig, [0x00, 0xff, 0x10]);
+        m.assert_async().await;
     }
 }
