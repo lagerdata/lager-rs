@@ -30,7 +30,7 @@ and recovery (`cycle`/`recover` on `/usb/command`, box 0.39.0 →
 (`jlink_script` / `openocd_config` on `/debug/connect` →
 `ConnectOptions`).
 
-Closed by crate 0.8 (catch-up through box 0.59.0):
+Closed by crate 0.8 (catch-up through box 0.60.0):
 
 - Oscilloscope nets: the `scope` / `scope-channel` roles on `/net/command`
   (box 0.55.0) → `lager.scope()`, with channel setup, timebase, trigger,
@@ -38,6 +38,10 @@ Closed by crate 0.8 (catch-up through box 0.59.0):
 - YubiHSM 2 nets: the `hsm` role (box 0.59.0) → `lager.hsm()`.
 - Custom-driver nets: any role a driver installed on the box declares (box
   0.59.0) → `lager.custom()`.
+- Halt-in-place: `POST /debug/halt` (box 0.60.0), OpenOCD's bare `halt`
+  with no nRESET pulse → `debug.halt()`, gated on the debug service's
+  `"halt"` feature. J-Link has no halt-in-place primitive; the box answers
+  400 pointing at a halt-first `.JLinkScript`.
 - Debug service: partial erase (`erase_start` / `erase_size`, box 0.50.0)
   → `erase_range()`; flash and erase verdicts (box 0.51.0) →
   `FlashReport` / `EraseReport` and `Error::FlashFailed`; probe-busy (503)
@@ -45,24 +49,11 @@ Closed by crate 0.8 (catch-up through box 0.59.0):
   probed status (box 0.44.0), port overrides on connect, memory reads
   without a reset, and the RTT chunk size.
 - Webcam `snapshot` (box 0.47.0) and the stream starter fields; arm
-  `get_acceleration` (on lager `main`, after box 0.59.0); USB `cycle`
-  outcomes (box 0.49.0); SPI/I2C achieved
-  clock and warnings (box 0.47.0 / 0.49.0); `NetState::enabled` (box
-  0.53.0); the newer `/status` capability flags.
+  `get_acceleration` (box 0.60.0); USB `cycle` outcomes (box 0.49.0);
+  SPI/I2C achieved clock and warnings (box 0.47.0 / 0.49.0);
+  `NetState::enabled` (box 0.53.0); the newer `/status` capability flags.
 
 ## Open
-
-### Halt-in-place (`DebugNet::halt()`)
-
-The box side is done: `POST /debug/halt` (OpenOCD's bare `halt`, stopping
-the core without pulsing nRESET) is on lager `main`, and the debug
-service's `/health` `features` list `"halt"` so a client can tell. It is not
-in a box release yet (the latest is 0.59.0).
-
-Needed: `DebugNet::halt()` next to `reset()`, gated on the `"halt"`
-feature, once a box release carries the route. J-Link answers 400 with the
-"use a halt-first .JLinkScript" guidance; there is no halt-in-place
-primitive on that backend.
 
 ### Scope trace capture
 

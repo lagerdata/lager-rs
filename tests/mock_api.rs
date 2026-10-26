@@ -2521,7 +2521,7 @@ fn arm_get_acceleration_on_an_older_box_is_unsupported() {
         }));
     });
     match client(&server).arm("arm1").get_acceleration().unwrap_err() {
-        Error::UnsupportedByBox { message } => assert!(message.contains("0.59.0"), "{message}"),
+        Error::UnsupportedByBox { message } => assert!(message.contains("0.60.0"), "{message}"),
         other => panic!("expected UnsupportedByBox, got {other:?}"),
     }
 }

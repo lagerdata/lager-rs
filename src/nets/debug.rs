@@ -490,7 +490,7 @@ impl DebugNet<'_> {
         self.call(&path, body, timeout).map(|_| ())
     }
 
-    /// Halt the core where it is, without a reset (box newer than 0.59.0,
+    /// Halt the core where it is, without a reset (box >= 0.60.0,
     /// OpenOCD nets only).
     ///
     /// Unlike `reset(true)`, which resets and then halts at the reset
@@ -502,7 +502,7 @@ impl DebugNet<'_> {
     /// instead. So does a net with no running debugger connection.
     pub fn halt(&self) -> Result<()> {
         let (status, health) = self.client.execute_debug(&wire::debug_health_request())?;
-        wire::require_debug_feature(status, health, "halt", "newer than 0.59.0")?;
+        wire::require_debug_feature(status, health, "halt", ">= 0.60.0")?;
         let net = self.net_record()?;
         let (path, body, timeout) = ops::halt(&net);
         self.call(&path, body, timeout).map(|_| ())
@@ -789,7 +789,7 @@ impl AsyncDebugNet<'_> {
             .client
             .execute_debug(&wire::debug_health_request())
             .await?;
-        wire::require_debug_feature(status, health, "halt", "newer than 0.59.0")?;
+        wire::require_debug_feature(status, health, "halt", ">= 0.60.0")?;
         let net = self.net_record().await?;
         let (path, body, timeout) = ops::halt(&net);
         self.call(&path, body, timeout).await.map(|_| ())
