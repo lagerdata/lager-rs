@@ -6,16 +6,12 @@ This crate targets the Lager box HTTP API on port 9000 for instrument nets
 `/uart` Socket.IO namespace), and the box **debug service on port 8765** for
 debug-probe nets.
 
-Only the net types below remain unreachable over an HTTP/JSON API, so the
-crate ships them as documented stubs whose methods return
-`Error::NotSupportedByBox`. This file is the work list for closing those gaps
-box-side.
+This file is the work list for the test-time surface the crate cannot reach
+yet: what the box does not serve over HTTP, and what it serves that the
+crate has not picked up. No net type is a stub any more; the last one,
+`Scope`, became a real net in crate 0.8.
 
-(Debug-probe nets are already covered — `DebugNet` talks to the box debug
-service on port 8765. Arm, webcam, router, and solar nets are covered as
-`/net/command` roles, and the box-level BLE / WiFi / BluFi capabilities have
-dedicated `POST /{ble,wifi,blufi}/command` endpoints — see the README and the
-`nets::{arm,webcam,router,solar,ble,wifi,blufi}` docs.
+## Closed
 
 Closed by box 0.33.0 + crate 0.3: generic USB bus enumeration
 (`GET /usb/devices` → `lager.usb_devices()`), box-side USB-DFU flashing
@@ -32,48 +28,82 @@ and recovery (`cycle`/`recover` on `/usb/command`, box 0.39.0 →
 `usb.cycle()` / `recover()`), live net state (`GET /nets/state`, box
 0.34.0 → `lager.nets_state()`), and per-connection debug scripts
 (`jlink_script` / `openocd_config` on `/debug/connect` →
-`ConnectOptions`).)
+`ConnectOptions`).
 
-## Halt-in-place (`DebugNet::halt()`)
+Closed by crate 0.8 (catch-up through box 0.59.0):
 
-Today: box 0.43.0's `DebugNet.halt()` — OpenOCD's bare `halt`, stopping the
-core without pulsing nRESET, which matters on parts executing in place out
-of QSPI — exists only in the on-box `lager python` API, where it drives the
-OpenOCD TCL RPC directly. The debug service on port 8765 exposes no
-`/debug/halt` endpoint, so no HTTP client can reach it.
+- Oscilloscope nets: the `scope` / `scope-channel` roles on `/net/command`
+  (box 0.55.0) → `lager.scope()`, with channel setup, timebase, trigger,
+  acquisition control and measurements.
+- YubiHSM 2 nets: the `hsm` role (box 0.59.0) → `lager.hsm()`.
+- Custom-driver nets: any role a driver installed on the box declares (box
+  0.59.0) → `lager.custom()`.
+- Debug service: partial erase (`erase_start` / `erase_size`, box 0.50.0)
+  → `erase_range()`; flash and erase verdicts (box 0.51.0) →
+  `FlashReport` / `EraseReport` and `Error::FlashFailed`; probe-busy (503)
+  and safety refusals (403) → `Error::ProbeBusy` / `Error::SafetyRefused`;
+  probed status (box 0.44.0), port overrides on connect, memory reads
+  without a reset, and the RTT chunk size.
+- Webcam `snapshot` (box 0.47.0) and the stream starter fields; arm
+  `get_acceleration` (on lager `main`, after box 0.59.0); USB `cycle`
+  outcomes (box 0.49.0); SPI/I2C achieved
+  clock and warnings (box 0.47.0 / 0.49.0); `NetState::enabled` (box
+  0.53.0); the newer `/status` capability flags.
 
-Needed: a `POST /debug/halt` route on the debug service (OpenOCD only;
-J-Link has no halt-in-place primitive and the service should answer with
-the same "use a halt-first .JLinkScript" guidance the Python API gives).
-The crate would then add `DebugNet::halt()` next to `reset()`.
+## Open
 
-## Oscilloscope / logic analyzer (`Scope` stub)
+### Halt-in-place (`DebugNet::halt()`)
 
-Today: `lager scope` / `lager logic` run over the legacy `:5000` exec path
-and the dedicated oscilloscope streaming daemon (ports 8082-8085).
+The box side is done: `POST /debug/halt` (OpenOCD's bare `halt`, stopping
+the core without pulsing nRESET) is on lager `main`, and the debug
+service's `/health` `features` list `"halt"` so a client can tell. It is not
+in a box release yet (the latest is 0.59.0).
 
-Needed (minimum useful subset for cargo tests):
+Needed: `DebugNet::halt()` next to `reset()`, gated on the `"halt"`
+feature, once a box release carries the route. J-Link answers 400 with the
+"use a halt-first .JLinkScript" guidance; there is no halt-in-place
+primitive on that backend.
 
-- `analog` / `logic` roles in `/net/command`'s `ROLE_ACTIONS` covering:
-  trigger config, single capture (returning the trace as JSON), and scalar
-  measurements (vpp, frequency, ...).
-- Streaming capture can stay on the dedicated daemon; the crate would add a
-  feature-gated client later if needed.
+### Scope trace capture
 
-## Not planned as stubs (out of crate scope for now)
+Today: the waveform itself streams from the box's oscilloscope daemon to
+the `/scope` page in the browser. `/net/command` returns settings and
+measurements, never samples.
 
-These Python-API workflows are provisioning/utility flows rather than
-test-time net access, and were left out of the crate entirely rather than
-stubbed:
+Needed: an HTTP or WebSocket endpoint that returns one capture's samples
+(time base, per-channel arrays, trigger position), so a test can assert on
+the trace and not only on scalar measurements.
+
+### Logic analyzer nets
+
+Today: `lager logic` still runs over the `:5000` Python-exec path; there is
+no `logic` role on `/net/command`.
+
+Needed: a `logic` role covering at least channel setup, trigger, a single
+capture and protocol decode results.
+
+## Not planned (out of crate scope for now)
+
+These are provisioning, configuration or UI flows rather than test-time
+net access, and are left out of the crate rather than stubbed:
 
 - `Rotation` / `Actuate` nets
-- net CRUD (`PUT/DELETE :9000/nets/...`) — the box already serves these;
-  they can be added to the crate quickly if test suites need to manage nets
-  programmatically. (The safety-limits corner of this surface —
-  `PUT /nets/<name>/safety-limits` — is served since crate 0.4.) FTDI
-  per-net channel selection (`params.interface`, box 0.43.0) falls in the
-  same bucket: it is saved-net configuration written at net-add time, and
-  the crate's `nets()` read-back already carries it inside `params`.
+- net CRUD (`PUT/DELETE :9000/nets/...`), net and box metadata sync,
+  `/drivers` (installing custom drivers), `/binaries`, `/bench`,
+  custom-device definitions, `/instruments/list` and `/diagnose/*`. The box
+  already serves these; they can be added to the crate if test suites need
+  to manage a box programmatically. (The safety-limits corner of net
+  config, `PUT /nets/<name>/safety-limits`, is served since crate 0.4.)
+  FTDI per-net channel selection (`params.interface`, box 0.43.0) falls in
+  the same bucket: it is saved-net configuration written at net-add time,
+  and the crate's `nets()` read-back already carries it inside `params`.
+- Instrument configuration that a test does not change between runs:
+  battery model files (`list_models` / `export_model` / `create_model`) and
+  supply `set_mode`. `Router::command` and `Scope::command` reach actions of
+  their roles the typed API leaves out.
+- The `/supply` and `/battery` Socket.IO monitors, the webcam per-stream
+  `/api/*` servers, UART session management, and `GET /nets/state?stream=1`
+  (NDJSON). `nets_state()` covers the one-shot read.
 - `lager python` remote-script execution and job control (submit / detach /
   reattach / kill) — the crate exists to replace those box-side Python
   scripts with Rust running on the host, so driving them is a non-goal.
