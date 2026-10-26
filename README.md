@@ -282,9 +282,10 @@ plain-text consoles work with `wait_for` directly.
 `force`, `halt` (reset-then-halt; honored on the OpenOCD backend by box >=
 0.43.0), and per-connection `jlink_script` / `openocd_config` contents that
 override a script saved on the net (an OpenOCD override must be a complete
-cfg that selects the adapter driver). Halt-in-place — OpenOCD's bare `halt`,
-no nRESET pulse — is not reachable over the debug service's HTTP API; see
-`MISSING_ENDPOINTS.md`.
+cfg that selects the adapter driver). For halt-in-place, OpenOCD's bare
+`halt` with no nRESET pulse, call `debug.halt()` (OpenOCD nets, box newer
+than 0.59.0; an older box fails with `Error::UnsupportedByBox` before
+anything reaches the probe).
 
 If the debug service is reached through an SSH tunnel, point the crate at it
 with `LagerBox::builder(host).debug_service_url("http://127.0.0.1:8765")` or

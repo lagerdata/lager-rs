@@ -18,6 +18,12 @@ All notable changes to the `lager-net` crate are documented here.
   `target_attached` is `None` from plain `status()` unless the box already
   knows the attach failed. `connected` keeps its meaning (a server process
   is running).
+- **`DebugNet::halt()`** stops the core where it is without pulsing nRESET,
+  unlike `reset(true)`, which matters on a part executing in place out of
+  QSPI (OpenOCD nets; box newer than 0.59.0). The crate checks the debug
+  service's `/health` features first and fails with
+  `Error::UnsupportedByBox` on a box without the route. A J-Link net gets
+  the box's 400 pointing at a halt-first `.JLinkScript`.
 - **`DebugNet::read_memory_no_reset()`** reads without the reset/halt the box
   otherwise does first on OpenOCD.
 - **`ConnectOptions` gains `gdb_port`, `swo_port`, `telnet_port` and
