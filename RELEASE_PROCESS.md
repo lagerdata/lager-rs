@@ -26,11 +26,28 @@ used again. Everything that can be checked is checked before the approval gate. 
 approve the deployment until **verify** is green and you have read the release notes
 it extracted.
 
+## When to Release
+
+The crate has its own version numbers. They do not follow the box software's version.
+Release the crate when it has a user-facing change, and in particular when a box
+release changes the box HTTP API.
+
+Each box release tag runs **Release: lager-rs API check** in lagerdata/lager. When the
+box HTTP API changed since the previous box release, that workflow opens an issue here,
+titled `Box API changes in lager vX.Y.Z`. The issue lists the new and removed routes,
+`/net/command` roles and actions, debug service features and `/status` capabilities.
+For each item, decide whether the crate picks it up. `MISSING_ENDPOINTS.md` records what
+is in scope. Close the issue when every item is covered, out of scope, or has its own
+issue.
+
+A crate release that needs a newer box names that box version in its CHANGELOG
+section, and in the README's "Minimum box version" table.
+
 ## Prerequisites
 
 - Push access to `lagerdata/lager-rs`.
-- A place on the `crates-io` environment's list of required reviewers. A second
-  maintainer on that list can approve instead.
+- A place on the `crates-io` environment's list of required reviewers
+  (@danielrmerskine, @adhanali, @cmfisher606). Any one of them can approve the publish.
 - For the manual fallback only: owner of `lager-net` on crates.io, and a crates.io API
   token with the `publish-update` scope for `lager-net`.
 
@@ -40,14 +57,24 @@ Before you start a release, confirm each item:
 
 - [ ] Every pull request for the release is merged to `main`, and CI on `main` is green.
 - [ ] The hardware tests pass on `main` against a real box, if the release changes a
-      call to the box. Run them as described in
-      [CONTRIBUTING.md](CONTRIBUTING.md#hardware-tests-require-a-connected-box), and
-      note the box software version.
+      call to the box. The **Hardware** workflow runs them nightly on the bench box. To
+      run it on `main` now, use the command below. To run them against another box, see
+      [CONTRIBUTING.md](CONTRIBUTING.md#hardware-tests-require-a-connected-box). Note
+      the box software version.
+- [ ] The README's "Minimum box version" table and `MISSING_ENDPOINTS.md` describe the
+      release.
 - [ ] `CHANGELOG.md` has an entry under `## [Unreleased]` for every user-facing change.
 - [ ] `## [Unreleased]` holds each `###` heading at most once. Two branches that each add
       a `### Changed` block both merge cleanly. Merge the blocks in Keep a Changelog
       order: Added, Changed, Deprecated, Removed, Fixed, Security. Keep every bullet.
 - [ ] No open security issue blocks the release.
+
+This command runs the hardware tests on `main`. The run waits for the bench box when
+another run holds it:
+
+```bash
+gh workflow run hardware.yml --repo lagerdata/lager-rs --ref main
+```
 
 This command counts the `###` headings under `## [Unreleased]`:
 
@@ -152,13 +179,16 @@ After the merge, create an annotated tag on the release commit, and push it. Tag
 
 ```bash
 git fetch origin
+git log -1 --format=%s origin/main   # must print: chore: release vX.Y.Z (#N)
 git tag -a vX.Y.Z origin/main -m "vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-Before you tag, confirm that `origin/main` is the release commit
-(`chore: release vX.Y.Z (#N)`). If another pull request merged after yours, tag the
-release commit by its SHA instead.
+Before you tag, confirm that `origin/main` is the release commit. If another pull
+request merged after yours, tag the release commit by its SHA instead.
+
+Pushing the tag publishes nothing yet. Until someone approves the deployment in step 7,
+you can still delete the tag (see [Troubleshooting](#troubleshooting)).
 
 ### 7. Approve the Publish
 
@@ -168,9 +198,25 @@ Open the Release run for the tag:
 gh run list --repo lagerdata/lager-rs --workflow release.yml --limit 1
 ```
 
-When **verify** is green, download the `release-notes` artifact or read the job log, and
-check the notes. Then approve the `crates-io` deployment in the run's page (**Review
-deployments**). The **publish** job publishes the crate and creates the GitHub Release.
+The run shows **verify**, then **publish**, which waits with the status "Waiting". To
+approve it:
+
+1. Wait for **verify** to go green. If it fails, do not approve; see
+   [Troubleshooting](#troubleshooting).
+2. Read the release notes. Download the `release-notes` artifact, or run:
+
+   ```bash
+   gh run download <run-id> --repo lagerdata/lager-rs --name release-notes
+   ```
+
+3. Open the run's page. In the yellow banner, click **Review deployments**.
+4. Select **crates-io**, and click **Approve and deploy**.
+
+The **publish** job then publishes the crate with trusted publishing, and creates the
+GitHub Release with the notes as its body. It takes about a minute.
+
+**Approving is the step you cannot undo.** After it, the version is on crates.io for
+good. To stop instead, click **Reject**, then delete the tag.
 
 ## Post-release
 
@@ -185,7 +231,14 @@ Confirm that the release is live:
 
 On a minor release, the docs in [lagerdata/lager](https://github.com/lagerdata/lager)
 also pin the crate (`docs/source/reference/rust/`). Open a pull request there to update
-them.
+them, together with any page that the release changes.
+
+This repository does not delete a merged branch. Delete the release branch:
+
+```bash
+git push origin --delete release/vX.Y.Z
+git branch -D release/vX.Y.Z
+```
 
 ## Manual Fallback
 
