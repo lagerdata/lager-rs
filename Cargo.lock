@@ -1131,7 +1131,7 @@ dependencies = [
 
 [[package]]
 name = "lager-net"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "httpmock",
  "reqwest 0.13.5",

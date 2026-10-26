@@ -4,6 +4,13 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-26
+
+Catches the crate up with box software 0.44.0 through 0.60.0. Several return types
+change and some response types become `#[non_exhaustive]`; see the behavior-change
+entries under **Changed**. New calls name the box version they need, and fail with
+`Error::UnsupportedByBox` on an older box.
+
 ### Added
 
 - **`DebugNet::erase_range(start, size)`** erases only part of the flash, and
