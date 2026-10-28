@@ -359,6 +359,80 @@ impl DebugHealth {
     }
 }
 
+/// `GET /health/detailed` on the debug service.
+pub fn debug_health_detailed_request() -> HttpRequest {
+    get("/health/detailed")
+}
+
+/// `GET /status` on the debug service.
+pub fn debug_service_status_request() -> HttpRequest {
+    get("/status")
+}
+
+/// Response of the debug service's `GET /health/detailed`: [`DebugHealth`]
+/// plus the service's own operating state.
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct DebugHealthDetailed {
+    /// `"healthy"` when the service is up.
+    #[serde(default)]
+    pub status: String,
+    /// Service version string.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// What the service can do beyond its original request shapes.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Whether a J-Link GDB server process is running.
+    #[serde(default, deserialize_with = "lenient::opt_bool")]
+    pub jlink_gdbserver_running: Option<bool>,
+    /// PID of that process.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub jlink_gdbserver_pid: Option<i64>,
+    /// GDB controllers the service holds open.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub gdb_controllers_cached: Option<i64>,
+    /// Highest use count among those controllers.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub gdb_max_use_count: Option<i64>,
+    /// Seconds since the service started.
+    #[serde(default, deserialize_with = "lenient::opt_f64")]
+    pub service_uptime_seconds: Option<f64>,
+    /// Number of debug connections the service is tracking.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub active_connections: Option<i64>,
+    /// Operational warnings, such as a service up for more than 7 days or
+    /// a GDB controller near its refresh threshold. Empty when none.
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Response of the debug service's `GET /status`: every connection it is
+/// tracking, across all debug nets.
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct DebugServiceStatus {
+    /// Connection ids, `"<net>:<device>"`.
+    #[serde(default)]
+    pub active_connections: Vec<String>,
+    /// The J-Link GDB server process state, as the service reports it.
+    #[serde(default)]
+    pub jlink_gdbserver: Option<Value>,
+}
+
+/// What a debug `reset` or `halt` printed.
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct DebugOutput {
+    /// The backend's output, one entry per line or step. Often empty on
+    /// OpenOCD, which prints nothing for a plain reset or halt.
+    #[serde(default)]
+    pub output: Vec<String>,
+    /// Debug backend (`"jlink"` or `"openocd"`).
+    #[serde(default)]
+    pub backend: Option<String>,
+}
+
 /// Interpret the debug service's `/health`, and refuse unless it lists
 /// `feature`. `since` names the box versions that have it (`">= 0.50.0"`).
 pub fn require_debug_feature(status: u16, body: Value, feature: &str, since: &str) -> Result<()> {

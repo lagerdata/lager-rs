@@ -4,10 +4,21 @@
 //!
 //! ```sh
 //! LAGER_BOX_HOST=192.168.1.42 cargo run --example debug_tunnel -- debug1
+//! LAGER_BOX_HOST=192.168.1.42 cargo run --example debug_tunnel -- debug1 --write
 //! ```
 //!
-//! Sends `qSupported`, reads 32 bytes at 0x20000000 (`m20000000,20`), then
-//! detaches so the target runs on, and stops the GDB server.
+//! Sends `qSupported`, reads the core registers (`g`) and 32 bytes at
+//! 0x20000000 (`m20000000,20`), then detaches so the target runs on, and
+//! stops the GDB server.
+//!
+//! With `--write` it also writes four bytes to RAM at 0x20000000 (`M`),
+//! reads them back, and writes the original bytes back. That address is
+//! the start of RAM on most Cortex-M parts; on a running target it can hold
+//! live data, so use `--write` only on a target you can reset.
+//!
+//! This is how a Rust test reaches what the typed API does not cover:
+//! register access, memory writes, breakpoints, or any other GDB remote
+//! protocol packet.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -15,8 +26,12 @@ use std::net::TcpStream;
 use lager::LagerBox;
 
 fn main() -> lager::Result<()> {
-    let net = std::env::args()
-        .nth(1)
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let write = args.iter().any(|a| a == "--write");
+    let net = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .cloned()
         .unwrap_or_else(|| "debug1".to_string());
     let lager_box = LagerBox::from_env()?;
     let debug = lager_box.debug(&net);
@@ -31,20 +46,40 @@ fn main() -> lager::Result<()> {
     // debug_tunnel waits out the moment a just-started server takes to
     // open its port.
     let mut stream = lager_box.debug_tunnel(port)?;
-    let result = session(&mut stream);
+    let result = session(&mut stream, write);
     drop(stream);
     debug.disconnect(false)?;
     result.map_err(|e| lager::Error::Stream(format!("GDB remote protocol: {e}")))
 }
 
-fn session(stream: &mut TcpStream) -> std::io::Result<()> {
+fn session(stream: &mut TcpStream, write: bool) -> std::io::Result<()> {
     let features = exchange(stream, "qSupported:multiprocess+;swbreak+;hwbreak+")?;
     println!("qSupported -> {features}");
+
+    // All core registers as one hex string, in the target's register order
+    // (r0-r15 first on Cortex-M).
+    let registers = exchange(stream, "g")?;
+    println!("g -> {registers}");
 
     let memory = exchange(stream, "m20000000,20")?;
     println!("m20000000,20 -> {memory}");
     if let Some(text) = hex_to_text(&memory) {
         println!("  as text: {text:?}");
+    }
+
+    if write {
+        let original = exchange(stream, "m20000000,4")?;
+        // An error reply (`E01`) means the target refused the read; writing
+        // it back as data would corrupt RAM, so stop here.
+        if original.len() != 8 || !original.bytes().all(|b| b.is_ascii_hexdigit()) {
+            println!("m20000000,4 -> {original}: not writing");
+        } else {
+            let wrote = exchange(stream, "M20000000,4:deadbeef")?;
+            println!("M20000000,4:deadbeef -> {wrote}");
+            println!("m20000000,4 -> {}", exchange(stream, "m20000000,4")?);
+            let restore = format!("M20000000,4:{original}");
+            println!("{restore} -> {}", exchange(stream, &restore)?);
+        }
     }
 
     println!("D -> {}", exchange(stream, "D")?);

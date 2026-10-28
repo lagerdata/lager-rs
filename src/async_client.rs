@@ -34,8 +34,9 @@ use crate::nets::watt::AsyncWattMeter;
 use crate::nets::webcam::AsyncWebcam;
 use crate::nets::wifi::AsyncWifi;
 use crate::wire::{
-    self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, NetState, Op, SafetyLimits,
-    Timeout, UartSession, UsbDeviceFilter, UsbDeviceInfo,
+    self, BoxLock, BoxStatus, DebugHealth, DebugHealthDetailed, DebugServiceStatus, Health,
+    HttpRequest, Method, NetRecord, NetState, Op, SafetyLimits, Timeout, UartSession,
+    UsbDeviceFilter, UsbDeviceInfo,
 };
 
 /// A connection to one Lager box, over async HTTP (reqwest/tokio).
@@ -636,6 +637,33 @@ impl AsyncLagerBox {
             Ok((status, body)) => wire::parse_nets_state(status, body),
             Err(e) => Err(wire::map_route_missing(e, wire::nets_state_unsupported)),
         }
+    }
+
+    /// The debug service's health (port 8765, or the debug-service URL):
+    /// its version and the features it supports, such as `"erase_range"`
+    /// and `"halt"`.
+    pub async fn debug_service_health(&self) -> Result<DebugHealth> {
+        let (status, body) = self.execute_debug(&wire::debug_health_request()).await?;
+        serde_json::from_value(wire::parse_debug(status, body)?).map_err(Into::into)
+    }
+
+    /// [`Self::debug_service_health`] plus the service's operating state:
+    /// GDB server process, cached GDB controllers, uptime, and warnings
+    /// such as a service that has run for more than 7 days.
+    pub async fn debug_service_health_detailed(&self) -> Result<DebugHealthDetailed> {
+        let (status, body) = self
+            .execute_debug(&wire::debug_health_detailed_request())
+            .await?;
+        serde_json::from_value(wire::parse_debug(status, body)?).map_err(Into::into)
+    }
+
+    /// Every debug connection the debug service is tracking, across all
+    /// debug nets on the box.
+    pub async fn debug_service_status(&self) -> Result<DebugServiceStatus> {
+        let (status, body) = self
+            .execute_debug(&wire::debug_service_status_request())
+            .await?;
+        serde_json::from_value(wire::parse_debug(status, body)?).map_err(Into::into)
     }
 
     /// The UART sessions currently holding a net (`GET /uart/sessions`,

@@ -199,12 +199,15 @@ fn reset_sends_halt_flag() {
             "halt": true
         }));
         then.status(200).json_body(json!({
-            "status": "reset_complete", "halt": true, "output": [], "backend": "jlink"
+            "status": "reset_complete", "halt": true,
+            "output": ["Reset delay: 0 ms", "Reset type NORMAL"], "backend": "jlink"
         }));
     });
 
     let lager = client(&server);
-    lager.debug("debug1").reset(true).unwrap();
+    let out = lager.debug("debug1").reset(true).unwrap();
+    assert_eq!(out.output, vec!["Reset delay: 0 ms", "Reset type NORMAL"]);
+    assert_eq!(out.backend.as_deref(), Some("jlink"));
     nets.assert();
     reset.assert();
 }
@@ -530,7 +533,9 @@ fn halt_sends_the_net_when_the_service_lists_the_feature() {
     });
 
     let lager = client(&server);
-    lager.debug("debug1").halt().unwrap();
+    let out = lager.debug("debug1").halt().unwrap();
+    assert!(out.output.is_empty());
+    assert_eq!(out.backend.as_deref(), Some("openocd"));
     health.assert();
     halt.assert();
 }
@@ -749,4 +754,213 @@ fn safety_refusal_is_safety_refused() {
         }
         other => panic!("expected Error::SafetyRefused, got {other:?}"),
     }
+}
+
+#[test]
+fn flash_with_carries_script_verbose_and_evidence() {
+    use lager::FlashOptions;
+
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    // "foobar" -> "Zm9vYmFy", "baz" -> "YmF6".
+    let flash = server.mock(|when, then| {
+        when.method(POST).path("/debug/flash").json_body(json!({
+            "net": debug_record(),
+            "hexfile": { "content": "Zm9vYmFy" },
+            "verbose": true,
+            "jlink_script": "YmF6",
+            "require_evidence": false
+        }));
+        then.status(200).json_body(json!({
+            "status": "flash_complete", "output": ["Downloading file", "O.K."],
+            "programmed": true, "error": null
+        }));
+    });
+
+    let lager = client(&server);
+    lager
+        .debug("debug1")
+        .flash_bytes_with(
+            b"foobar",
+            FirmwareKind::Hex,
+            None,
+            &FlashOptions {
+                verbose: true,
+                jlink_script: Some(b"baz".to_vec()),
+                require_evidence: Some(false),
+            },
+        )
+        .unwrap();
+    flash.assert();
+}
+
+#[test]
+fn default_flash_options_add_nothing_to_the_request() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let flash = server.mock(|when, then| {
+        when.method(POST).path("/debug/flash").json_body(json!({
+            "net": debug_record(),
+            "elffile": { "content": "Zm9vYmFy" }
+        }));
+        then.status(200).json_body(json!({
+            "status": "flash_complete", "output": [], "programmed": true, "error": null
+        }));
+    });
+
+    let lager = client(&server);
+    lager
+        .debug("debug1")
+        .flash_bytes(b"foobar", FirmwareKind::Elf, None)
+        .unwrap();
+    flash.assert();
+}
+
+#[test]
+fn erase_with_sends_interface_options() {
+    use lager::{EraseOptions, Transport};
+
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let erase = server.mock(|when, then| {
+        when.method(POST).path("/debug/erase").json_body(json!({
+            "net": debug_record(),
+            "speed": "1000",
+            "transport": "JTAG",
+            "require_evidence": false
+        }));
+        then.status(200).json_body(json!({
+            "status": "erase_complete", "output": "Erasing done.",
+            "backend": "jlink", "erase_range": null
+        }));
+    });
+
+    let lager = client(&server);
+    lager
+        .debug("debug1")
+        .erase_with(&EraseOptions {
+            speed: Some("1000".into()),
+            transport: Some(Transport::Jtag),
+            require_evidence: Some(false),
+        })
+        .unwrap();
+    erase.assert();
+}
+
+#[test]
+fn erase_range_with_sends_range_and_options() {
+    use lager::{EraseOptions, Transport};
+
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/health");
+        then.status(200).json_body(json!({
+            "status": "healthy", "features": ["erase_range", "halt"]
+        }));
+    });
+    let erase = server.mock(|when, then| {
+        when.method(POST).path("/debug/erase").json_body(json!({
+            "net": debug_record(),
+            "erase_start": 65536,
+            "erase_size": 4096,
+            "transport": "SWD"
+        }));
+        then.status(200).json_body(json!({
+            "status": "erase_complete", "output": "Erasing done.", "backend": "jlink",
+            "erase_range": {
+                "start": 65536, "end": 69631, "length": 4096,
+                "source": "request", "text": "0x00010000-0x00010FFF (4 KiB)"
+            }
+        }));
+    });
+
+    let lager = client(&server);
+    let report = lager
+        .debug("debug1")
+        .erase_range_with(
+            0x1_0000,
+            0x1000,
+            &EraseOptions {
+                transport: Some(Transport::Swd),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(report.erase_range.unwrap().length, 4096);
+    erase.assert();
+}
+
+#[test]
+fn rtt_timeout_rides_in_the_request() {
+    use lager::RttOptions;
+
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let rtt = server.mock(|when, then| {
+        when.method(POST).path("/debug/rtt").json_body(json!({
+            "net": debug_record(),
+            "channel": 0,
+            "timeout": 5.0
+        }));
+        then.status(200).body("hello");
+    });
+
+    let lager = client(&server);
+    let mut stream = lager
+        .debug("debug1")
+        .rtt_with(&RttOptions {
+            timeout: Some(5.0),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut stream, &mut text).unwrap();
+    assert_eq!(text, "hello");
+    rtt.assert();
+}
+
+#[test]
+fn debug_service_health_routes() {
+    let server = MockServer::start();
+    let health = server.mock(|when, then| {
+        when.method(GET).path("/health");
+        then.status(200).json_body(json!({
+            "status": "healthy", "version": "1.0.0",
+            "features": ["erase_range", "halt"], "uptime": 12.5
+        }));
+    });
+    let detailed = server.mock(|when, then| {
+        when.method(GET).path("/health/detailed");
+        then.status(200).json_body(json!({
+            "status": "healthy", "version": "1.0.0", "features": ["erase_range", "halt"],
+            "jlink_gdbserver_running": true, "jlink_gdbserver_pid": 4321,
+            "gdb_controllers_cached": 1, "gdb_max_use_count": 9,
+            "service_uptime_seconds": 864000.0, "service_uptime_days": 10.0,
+            "active_connections": 1,
+            "warnings": [
+                "Service has been running for >7 days, consider restart for consistency",
+                "GDB controller used 9 times, nearing refresh threshold"
+            ]
+        }));
+    });
+    let status = server.mock(|when, then| {
+        when.method(GET).path("/status");
+        then.status(200).json_body(json!({
+            "jlink_gdbserver": {"running": true, "pid": 4321},
+            "active_connections": ["debug1:nrf52840_xxaa"]
+        }));
+    });
+
+    let lager = client(&server);
+    assert!(lager.debug_service_health().unwrap().supports("halt"));
+    let d = lager.debug_service_health_detailed().unwrap();
+    assert_eq!(d.jlink_gdbserver_running, Some(true));
+    assert_eq!(d.gdb_max_use_count, Some(9));
+    assert_eq!(d.warnings.len(), 2);
+    let st = lager.debug_service_status().unwrap();
+    assert_eq!(st.active_connections, vec!["debug1:nrf52840_xxaa"]);
+    health.assert();
+    detailed.assert();
+    status.assert();
 }

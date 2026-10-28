@@ -329,6 +329,9 @@ mod tests {
                 search_addr: Some(0x2002_0000),
                 search_size: Some(0x4000),
                 chunk_size: Some(4096),
+                // The one-way stream's timeout; the interactive session
+                // does not send it.
+                timeout: Some(5.0),
             },
         );
         assert_eq!(
