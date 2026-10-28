@@ -32,8 +32,9 @@ use crate::nets::watt::WattMeter;
 use crate::nets::webcam::Webcam;
 use crate::nets::wifi::Wifi;
 use crate::wire::{
-    self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, NetState, Op, SafetyLimits,
-    Timeout, UartSession, UsbDeviceFilter, UsbDeviceInfo,
+    self, BoxLock, BoxStatus, DebugHealth, DebugHealthDetailed, DebugServiceStatus, Health,
+    HttpRequest, Method, NetRecord, NetState, Op, SafetyLimits, Timeout, UartSession,
+    UsbDeviceFilter, UsbDeviceInfo,
 };
 use crate::BOX_HOST_ENV;
 
@@ -785,6 +786,29 @@ impl LagerBox {
             Ok((status, body)) => wire::parse_nets_state(status, body),
             Err(e) => Err(wire::map_route_missing(e, wire::nets_state_unsupported)),
         }
+    }
+
+    /// The debug service's health (port 8765, or the debug-service URL):
+    /// its version and the features it supports, such as `"erase_range"`
+    /// and `"halt"`.
+    pub fn debug_service_health(&self) -> Result<DebugHealth> {
+        let (status, body) = self.execute_debug(&wire::debug_health_request())?;
+        serde_json::from_value(wire::parse_debug(status, body)?).map_err(Into::into)
+    }
+
+    /// [`Self::debug_service_health`] plus the service's operating state:
+    /// GDB server process, cached GDB controllers, uptime, and warnings
+    /// such as a service that has run for more than 7 days.
+    pub fn debug_service_health_detailed(&self) -> Result<DebugHealthDetailed> {
+        let (status, body) = self.execute_debug(&wire::debug_health_detailed_request())?;
+        serde_json::from_value(wire::parse_debug(status, body)?).map_err(Into::into)
+    }
+
+    /// Every debug connection the debug service is tracking, across all
+    /// debug nets on the box.
+    pub fn debug_service_status(&self) -> Result<DebugServiceStatus> {
+        let (status, body) = self.execute_debug(&wire::debug_service_status_request())?;
+        serde_json::from_value(wire::parse_debug(status, body)?).map_err(Into::into)
     }
 
     /// The UART sessions currently holding a net (`GET /uart/sessions`,

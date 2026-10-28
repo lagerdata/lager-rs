@@ -46,6 +46,26 @@ All notable changes to the `lager-net` crate are documented here.
 - **`DfuOptions::timeout_seconds`** sets how long the box lets `dfu-util` run
   (box default 120 s, maximum 600 s), and the crate widens its HTTP timeout to
   match.
+- **`DebugNet::flash_with()` / `flash_bytes_with()`** take `FlashOptions`:
+  `jlink_script` sends a `.JLinkScript` with the flash, `verbose` flashes
+  through J-Link Commander alone with full output, and `require_evidence:
+  Some(false)` accepts a J-Link flash whose output lacks the usual
+  "programmed" lines. Pass the script you connected with: without one the box
+  uses the net's saved script, and failing that a temp file holding the script
+  of whichever J-Link net connected most recently.
+- **`DebugNet::erase_with()` / `erase_range_with()`** take `EraseOptions`: J-Link
+  interface `speed`, `transport` (`Transport::Swd` / `Jtag`) and
+  `require_evidence`.
+- **`RttOptions::timeout`** closes the one-way `rtt()` stream after that many
+  seconds.
+- **`LagerBox::debug_service_health()`, `debug_service_health_detailed()` and
+  `debug_service_status()`** (both clients) read the debug service's version
+  and features, its operating state and warnings (`DebugHealthDetailed`), and
+  every connection it is tracking (`DebugServiceStatus`).
+- **The `debug_tunnel` example** now reads the core registers, and with
+  `--write` writes four bytes of RAM, reads them back and restores them: the
+  pattern for register access, memory writes and other GDB packets the typed
+  API does not cover.
 
 ### Changed
 
@@ -64,6 +84,17 @@ All notable changes to the `lager-net` crate are documented here.
   exhaustive `match` on `Method` needs an arm for it.
 - **`DfuOptions` gains a field.** A struct literal without
   `..Default::default()` needs `timeout_seconds` added.
+- **`DebugNet::reset()` and `halt()` return `DebugOutput`** (the probe's
+  output lines and the backend), not `()`. Callers that use `?` or `unwrap()`
+  are unaffected.
+- **`RttOptions` gains a field.** A struct literal without
+  `..Default::default()` needs `timeout` added.
+
+### Fixed
+
+- **`DebugNet::read_memory_no_reset()` docs** said the box resets and halts
+  before an OpenOCD read. It never does: only a J-Link net on a Renesas
+  DA1469x resets and halts first, so that is the only case the method changes.
 
 ## [0.8.0] - 2026-10-26
 

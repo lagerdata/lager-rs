@@ -34,7 +34,7 @@ use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
 use crate::wire::{
-    self, DebugConnection, DebugInfo, DebugStatus, EraseReport, FlashReport, Timeout,
+    self, DebugConnection, DebugInfo, DebugOutput, DebugStatus, EraseReport, FlashReport, Timeout,
 };
 
 /// Base64-encode bytes with the standard alphabet (with padding). Kept
@@ -194,6 +194,60 @@ impl Default for ConnectOptions {
     }
 }
 
+/// Options for [`DebugNet::flash_with`] / [`DebugNet::flash_bytes_with`].
+#[derive(Debug, Clone, Default)]
+pub struct FlashOptions {
+    /// Flash through J-Link Commander alone, without the GDB server, and
+    /// keep its full output (J-Link only). Slower; useful when a flash
+    /// misbehaves.
+    pub verbose: bool,
+    /// Contents of a `.JLinkScript` to run for this flash (J-Link only).
+    /// Pass the script you connected with: without one, the box uses the
+    /// script saved on the net, and failing that a single temp file that
+    /// holds the script of whichever J-Link net connected most recently,
+    /// which can belong to a different net.
+    pub jlink_script: Option<Vec<u8>>,
+    /// `Some(false)` accepts a J-Link flash whose output lacks J-Link's
+    /// usual "programmed" lines, for a target whose J-Link output is worded
+    /// differently. Explicit failure lines still fail. `None` uses the
+    /// box's setting (evidence required by default).
+    pub require_evidence: Option<bool>,
+}
+
+/// Debug transport for [`EraseOptions::transport`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// Serial Wire Debug.
+    Swd,
+    /// JTAG.
+    Jtag,
+}
+
+impl Transport {
+    /// Wire encoding understood by the box.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Transport::Swd => "SWD",
+            Transport::Jtag => "JTAG",
+        }
+    }
+}
+
+/// Options for [`DebugNet::erase_with`] / [`DebugNet::erase_range_with`].
+/// Every field applies to the J-Link backend only; OpenOCD ignores them.
+#[derive(Debug, Clone, Default)]
+pub struct EraseOptions {
+    /// Interface speed in kHz (box default `"4000"`).
+    pub speed: Option<String>,
+    /// Debug transport (box default SWD).
+    pub transport: Option<Transport>,
+    /// `Some(false)` accepts an erase J-Link did not confirm with its
+    /// `Erasing done.` line. A failed attach, and on an nRF5340 flash that
+    /// does not read back as 0xFF, still fail. `None` uses the box's
+    /// setting (confirmation required by default).
+    pub require_evidence: Option<bool>,
+}
+
 /// Default per-operation timeouts, matching the Python `DebugServiceClient`.
 const CONNECT_TIMEOUT: Timeout = Timeout::After(Duration::from_secs(30));
 const FLASH_TIMEOUT: Timeout = Timeout::After(Duration::from_secs(180));
@@ -213,6 +267,10 @@ pub struct RttOptions {
     pub search_size: Option<u64>,
     /// Read chunk size on the box side (J-Link only, advanced).
     pub chunk_size: Option<u64>,
+    /// Close the one-way [`DebugNet::rtt`] stream after this many seconds.
+    /// `None` streams until the connection closes. Ignored by
+    /// [`DebugNet::rtt_interactive`].
+    pub timeout: Option<f64>,
 }
 
 /// Build the JSON body for a debug op: the full net record plus extra params.
@@ -287,23 +345,36 @@ pub(crate) mod ops {
         )
     }
 
-    pub(crate) fn erase(net: &Value) -> (String, Value, Timeout) {
-        (
-            "/debug/erase".into(),
-            debug_body(net, json!({})),
-            ERASE_TIMEOUT,
-        )
+    fn erase_params(extra: &mut Value, opts: &EraseOptions) {
+        if let Some(speed) = &opts.speed {
+            extra["speed"] = json!(speed);
+        }
+        if let Some(transport) = opts.transport {
+            extra["transport"] = json!(transport.as_str());
+        }
+        if let Some(required) = opts.require_evidence {
+            extra["require_evidence"] = json!(required);
+        }
+    }
+
+    pub(crate) fn erase(net: &Value, opts: &EraseOptions) -> (String, Value, Timeout) {
+        let mut extra = json!({});
+        erase_params(&mut extra, opts);
+        ("/debug/erase".into(), debug_body(net, extra), ERASE_TIMEOUT)
     }
 
     /// Erase only `size` bytes from `start` (box >= 0.50.0, which lists
     /// `erase_range` in its `/health` features; an older box ignores the
     /// fields and erases the whole chip, so callers check first).
-    pub(crate) fn erase_range(net: &Value, start: u64, size: u64) -> (String, Value, Timeout) {
-        (
-            "/debug/erase".into(),
-            debug_body(net, json!({ "erase_start": start, "erase_size": size })),
-            ERASE_TIMEOUT,
-        )
+    pub(crate) fn erase_range(
+        net: &Value,
+        start: u64,
+        size: u64,
+        opts: &EraseOptions,
+    ) -> (String, Value, Timeout) {
+        let mut extra = json!({ "erase_start": start, "erase_size": size });
+        erase_params(&mut extra, opts);
+        ("/debug/erase".into(), debug_body(net, extra), ERASE_TIMEOUT)
     }
 
     pub(crate) fn read_memory(
@@ -350,15 +421,25 @@ pub(crate) mod ops {
         contents: &[u8],
         kind: FirmwareKind,
         address: Option<u32>,
+        opts: &FlashOptions,
     ) -> (String, Value, Timeout) {
         let b64 = base64_encode(contents);
-        let payload = match kind {
+        let mut payload = match kind {
             FirmwareKind::Hex => json!({ "hexfile": { "content": b64 } }),
             FirmwareKind::Elf => json!({ "elffile": { "content": b64 } }),
             FirmwareKind::Bin => json!({
                 "binfile": { "content": b64, "address": address.unwrap_or(0x0800_0000) }
             }),
         };
+        if opts.verbose {
+            payload["verbose"] = json!(true);
+        }
+        if let Some(script) = &opts.jlink_script {
+            payload["jlink_script"] = json!(base64_encode(script));
+        }
+        if let Some(required) = opts.require_evidence {
+            payload["require_evidence"] = json!(required);
+        }
         (
             "/debug/flash".into(),
             debug_body(net, payload),
@@ -370,7 +451,7 @@ pub(crate) mod ops {
     /// exposes no `rtt()`), so this is unused in async-only builds.
     #[cfg(feature = "blocking")]
     pub(crate) fn rtt_body(net: &Value, opts: &RttOptions) -> Value {
-        let mut extra = json!({ "channel": opts.channel, "timeout": Value::Null });
+        let mut extra = json!({ "channel": opts.channel, "timeout": opts.timeout });
         if let Some(a) = opts.search_addr {
             extra["search_addr"] = json!(a);
         }
@@ -483,11 +564,13 @@ impl DebugNet<'_> {
         self.call(&path, body, timeout).map(|_| ())
     }
 
-    /// Reset the target, optionally halting at the reset vector.
-    pub fn reset(&self, halt: bool) -> Result<()> {
+    /// Reset the target, optionally halting at the reset vector, and
+    /// return what the probe printed.
+    pub fn reset(&self, halt: bool) -> Result<DebugOutput> {
         let net = self.net_record()?;
         let (path, body, timeout) = ops::reset(&net, halt);
-        self.call(&path, body, timeout).map(|_| ())
+        let resp = self.call(&path, body, timeout)?;
+        serde_json::from_value(resp).map_err(Into::into)
     }
 
     /// Halt the core where it is, without a reset (box >= 0.60.0,
@@ -500,20 +583,26 @@ impl DebugNet<'_> {
     /// A J-Link net fails with [`Error::Box`] (HTTP 400): J-Link has no
     /// halt-in-place primitive, so connect with a halt-first `.JLinkScript`
     /// instead. So does a net with no running debugger connection.
-    pub fn halt(&self) -> Result<()> {
+    pub fn halt(&self) -> Result<DebugOutput> {
         let (status, health) = self.client.execute_debug(&wire::debug_health_request())?;
         wire::require_debug_feature(status, health, "halt", ">= 0.60.0")?;
         let net = self.net_record()?;
         let (path, body, timeout) = ops::halt(&net);
-        self.call(&path, body, timeout).map(|_| ())
+        let resp = self.call(&path, body, timeout)?;
+        serde_json::from_value(resp).map_err(Into::into)
     }
 
     /// Erase the target flash: the whole chip, or the part family's default
     /// range on parts where the box defines one (DA1469x, nRF5340). The
     /// report says which range was erased (box >= 0.50.0).
     pub fn erase(&self) -> Result<EraseReport> {
+        self.erase_with(&EraseOptions::default())
+    }
+
+    /// [`DebugNet::erase`] with J-Link interface options.
+    pub fn erase_with(&self, opts: &EraseOptions) -> Result<EraseReport> {
         let net = self.net_record()?;
-        let (path, body, timeout) = ops::erase(&net);
+        let (path, body, timeout) = ops::erase(&net, opts);
         let resp = self.call(&path, body, timeout)?;
         serde_json::from_value(resp).map_err(Into::into)
     }
@@ -525,10 +614,20 @@ impl DebugNet<'_> {
     /// range and erase the whole chip. The box refuses (HTTP 400) a range
     /// outside what it can erase on the part.
     pub fn erase_range(&self, start: u64, size: u64) -> Result<EraseReport> {
+        self.erase_range_with(start, size, &EraseOptions::default())
+    }
+
+    /// [`DebugNet::erase_range`] with J-Link interface options.
+    pub fn erase_range_with(
+        &self,
+        start: u64,
+        size: u64,
+        opts: &EraseOptions,
+    ) -> Result<EraseReport> {
         let (status, health) = self.client.execute_debug(&wire::debug_health_request())?;
         wire::require_debug_feature(status, health, "erase_range", ">= 0.50.0")?;
         let net = self.net_record()?;
-        let (path, body, timeout) = ops::erase_range(&net, start, size);
+        let (path, body, timeout) = ops::erase_range(&net, start, size, opts);
         let resp = self.call(&path, body, timeout)?;
         serde_json::from_value(resp).map_err(Into::into)
     }
@@ -559,8 +658,31 @@ impl DebugNet<'_> {
         kind: FirmwareKind,
         address: Option<u32>,
     ) -> Result<FlashReport> {
+        self.flash_bytes_with(contents, kind, address, &FlashOptions::default())
+    }
+
+    /// Flash a firmware file, inferring the type from its extension, with
+    /// [`FlashOptions`]. On a J-Link net connected with a per-connection
+    /// script, pass that script in `opts.jlink_script`.
+    pub fn flash_with(
+        &self,
+        firmware_path: impl AsRef<Path>,
+        opts: &FlashOptions,
+    ) -> Result<FlashReport> {
+        let (contents, kind) = read_firmware(firmware_path.as_ref())?;
+        self.flash_bytes_with(&contents, kind, None, opts)
+    }
+
+    /// Flash raw firmware bytes of a known kind, with [`FlashOptions`].
+    pub fn flash_bytes_with(
+        &self,
+        contents: &[u8],
+        kind: FirmwareKind,
+        address: Option<u32>,
+        opts: &FlashOptions,
+    ) -> Result<FlashReport> {
         let net = self.net_record()?;
-        let (path, body, timeout) = ops::flash(&net, contents, kind, address);
+        let (path, body, timeout) = ops::flash(&net, contents, kind, address, opts);
         let resp = self.call(&path, body, timeout)?;
         let report = wire::parse_flash(resp);
         if report.is_err() {
@@ -575,7 +697,10 @@ impl DebugNet<'_> {
     }
 
     /// Like [`DebugNet::read_memory`], but asks the box not to reset or halt
-    /// the target first (OpenOCD), so a running target keeps running.
+    /// the target first, so a running target keeps running. Only a J-Link
+    /// net on a Renesas DA1469x resets and halts before a read, so that is
+    /// the only case this changes; OpenOCD and every other J-Link part
+    /// already read without a reset.
     pub fn read_memory_no_reset(&self, address: u64, length: usize) -> Result<Vec<u8>> {
         self.read_memory_inner(address, length, true)
     }
@@ -776,15 +901,17 @@ impl AsyncDebugNet<'_> {
         self.call(&path, body, timeout).await.map(|_| ())
     }
 
-    /// Reset the target, optionally halting at the reset vector.
-    pub async fn reset(&self, halt: bool) -> Result<()> {
+    /// Reset the target, optionally halting at the reset vector, and
+    /// return what the probe printed.
+    pub async fn reset(&self, halt: bool) -> Result<DebugOutput> {
         let net = self.net_record().await?;
         let (path, body, timeout) = ops::reset(&net, halt);
-        self.call(&path, body, timeout).await.map(|_| ())
+        let resp = self.call(&path, body, timeout).await?;
+        serde_json::from_value(resp).map_err(Into::into)
     }
 
     /// Halt the core without a reset. See [`DebugNet::halt`].
-    pub async fn halt(&self) -> Result<()> {
+    pub async fn halt(&self) -> Result<DebugOutput> {
         let (status, health) = self
             .client
             .execute_debug(&wire::debug_health_request())
@@ -792,26 +919,43 @@ impl AsyncDebugNet<'_> {
         wire::require_debug_feature(status, health, "halt", ">= 0.60.0")?;
         let net = self.net_record().await?;
         let (path, body, timeout) = ops::halt(&net);
-        self.call(&path, body, timeout).await.map(|_| ())
+        let resp = self.call(&path, body, timeout).await?;
+        serde_json::from_value(resp).map_err(Into::into)
     }
 
     /// Erase the target flash. See [`DebugNet::erase`].
     pub async fn erase(&self) -> Result<EraseReport> {
+        self.erase_with(&EraseOptions::default()).await
+    }
+
+    /// [`DebugNet::erase`] with J-Link interface options.
+    pub async fn erase_with(&self, opts: &EraseOptions) -> Result<EraseReport> {
         let net = self.net_record().await?;
-        let (path, body, timeout) = ops::erase(&net);
+        let (path, body, timeout) = ops::erase(&net, opts);
         let resp = self.call(&path, body, timeout).await?;
         serde_json::from_value(resp).map_err(Into::into)
     }
 
     /// Erase only `size` bytes from `start`. See [`DebugNet::erase_range`].
     pub async fn erase_range(&self, start: u64, size: u64) -> Result<EraseReport> {
+        self.erase_range_with(start, size, &EraseOptions::default())
+            .await
+    }
+
+    /// [`DebugNet::erase_range`] with J-Link interface options.
+    pub async fn erase_range_with(
+        &self,
+        start: u64,
+        size: u64,
+        opts: &EraseOptions,
+    ) -> Result<EraseReport> {
         let (status, health) = self
             .client
             .execute_debug(&wire::debug_health_request())
             .await?;
         wire::require_debug_feature(status, health, "erase_range", ">= 0.50.0")?;
         let net = self.net_record().await?;
-        let (path, body, timeout) = ops::erase_range(&net, start, size);
+        let (path, body, timeout) = ops::erase_range(&net, start, size, opts);
         let resp = self.call(&path, body, timeout).await?;
         serde_json::from_value(resp).map_err(Into::into)
     }
@@ -842,8 +986,31 @@ impl AsyncDebugNet<'_> {
         kind: FirmwareKind,
         address: Option<u32>,
     ) -> Result<FlashReport> {
+        self.flash_bytes_with(contents, kind, address, &FlashOptions::default())
+            .await
+    }
+
+    /// Flash a firmware file with options. See [`DebugNet::flash_with`].
+    pub async fn flash_with(
+        &self,
+        firmware_path: impl AsRef<Path>,
+        opts: &FlashOptions,
+    ) -> Result<FlashReport> {
+        let (contents, kind) = read_firmware(firmware_path.as_ref())?;
+        self.flash_bytes_with(&contents, kind, None, opts).await
+    }
+
+    /// Flash raw firmware bytes with options. See
+    /// [`DebugNet::flash_bytes_with`].
+    pub async fn flash_bytes_with(
+        &self,
+        contents: &[u8],
+        kind: FirmwareKind,
+        address: Option<u32>,
+        opts: &FlashOptions,
+    ) -> Result<FlashReport> {
         let net = self.net_record().await?;
-        let (path, body, timeout) = ops::flash(&net, contents, kind, address);
+        let (path, body, timeout) = ops::flash(&net, contents, kind, address, opts);
         let resp = self.call(&path, body, timeout).await?;
         let report = wire::parse_flash(resp);
         if report.is_err() {

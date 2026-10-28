@@ -134,7 +134,9 @@ pub use async_client::{AsyncLagerBox, AsyncLagerBoxBuilder};
 // Net handle types and their vocabularies, re-exported at the crate root
 // for ergonomic imports (`use lager::{LagerBox, Level, EloadMode};`).
 pub use nets::battery::BatteryMode;
-pub use nets::debug::{ConnectOptions, FirmwareKind, RttOptions};
+pub use nets::debug::{
+    ConnectOptions, EraseOptions, FirmwareKind, FlashOptions, RttOptions, Transport,
+};
 pub use nets::dfu::DfuOptions;
 pub use nets::eload::EloadMode;
 pub use nets::gpio::{Level, WaitForLevelOptions};
@@ -145,8 +147,8 @@ pub use nets::supply::ProtectionLimits;
 
 /// Debug-service response types.
 pub use wire::{
-    DebugConnection, DebugHealth, DebugInfo, DebugStatus, EraseRange, EraseReport, FlashReport,
-    GdbServer,
+    DebugConnection, DebugHealth, DebugHealthDetailed, DebugInfo, DebugOutput, DebugServiceStatus,
+    DebugStatus, EraseRange, EraseReport, FlashReport, GdbServer,
 };
 
 #[cfg(feature = "blocking")]
