@@ -141,6 +141,7 @@ pub use nets::gpio::{Level, WaitForLevelOptions};
 pub use nets::hsm::{GenerateKey, GeneratedKey, HsmAuth, HsmInfo, HsmObject};
 pub use nets::scope::{EdgeTrigger, Measurement, Measurements, TriggerMode, TriggerSettings};
 pub use nets::spi::{BitOrder, CsActive, CsMode, SpiConfig, SpiOptions, SpiTransfer};
+pub use nets::supply::ProtectionLimits;
 
 /// Debug-service response types.
 pub use wire::{
@@ -178,10 +179,10 @@ pub use nets::i2c::I2cEffectiveConfig;
 pub use nets::spi::SpiEffectiveConfig;
 pub use nets::usb::{UsbCycleOutcome, UsbCycleReport};
 pub use wire::{
-    ArmPosition, BatteryState, BleCharacteristic, BleDevice, BleDeviceInfo, BleService,
-    BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxLock,
-    BoxStatus, DfuDevice, DfuOutput, EloadState, EnergyReading, EnergyStats, Health, NetRecord,
-    NetState, NetSummary, RouterSystemInfo, SafetyLimits, StatSummary, SupplyState,
-    UsbDeviceFilter, UsbDeviceInfo, WattReading, WebcamStatus, WebcamStream, WifiAccessPoint,
-    WifiConnection, WifiInterface,
+    ArmPosition, BatteryModel, BatteryModelEntry, BatteryModelPoint, BatteryState,
+    BleCharacteristic, BleDevice, BleDeviceInfo, BleService, BlufiDeviceInfo, BlufiNetwork,
+    BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxLock, BoxStatus, DfuDevice, DfuOutput,
+    EloadState, EnergyReading, EnergyStats, Health, NetRecord, NetState, NetSummary,
+    RouterSystemInfo, SafetyLimits, StatSummary, SupplyState, UsbDeviceFilter, UsbDeviceInfo,
+    WattReading, WebcamStatus, WebcamStream, WifiAccessPoint, WifiConnection, WifiInterface,
 };

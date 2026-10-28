@@ -10,7 +10,7 @@
 use httpmock::prelude::*;
 use lager::{
     BatteryMode, EdgeTrigger, EloadMode, Error, GenerateKey, HsmAuth, LagerBox, Level, Measurement,
-    SafetyLimits, SpiConfig, SpiOptions, TriggerMode, WaitForLevelOptions,
+    ProtectionLimits, SafetyLimits, SpiConfig, SpiOptions, TriggerMode, WaitForLevelOptions,
 };
 use serde_json::json;
 
@@ -207,8 +207,12 @@ fn energy_read_energy_and_stats() {
         }));
         then.status(200).json_body(json!({
             "success": true, "action": "read_energy",
-            "message": "1.2345 J (0.3741 C) over 10.0 s",
-            "value": {"energy_j": 1.2345, "charge_c": 0.3741, "duration_s": 10.0}
+            "message": "1800.0000 J (900.0000 C) over 10.0 s",
+            "value": {
+                "energy_j": 1800.0, "energy_wh": 0.5,
+                "charge_c": 900.0, "charge_ah": 0.25,
+                "duration_s": 10.0
+            }
         }));
     });
     let stats = server.mock(|when, then| {
@@ -228,8 +232,11 @@ fn energy_read_energy_and_stats() {
     let lager = client(&server);
     let analyzer = lager.energy_analyzer("en1");
     let reading = analyzer.read_energy(10.0).unwrap();
-    assert_eq!(reading.energy_j, Some(1.2345));
-    assert_eq!(reading.charge_c, Some(0.3741));
+    assert_eq!(reading.energy_j, Some(1800.0));
+    assert_eq!(reading.charge_c, Some(900.0));
+    assert_eq!(reading.energy_wh, Some(0.5));
+    assert_eq!(reading.charge_ah, Some(0.25));
+    assert!(reading.extra.is_empty());
     let s = analyzer.read_stats(1.0).unwrap();
     assert_eq!(s.current.unwrap().mean, Some(0.01));
     assert_eq!(s.voltage.unwrap().mean, Some(3.3));
@@ -260,7 +267,8 @@ fn eload_set_state_and_setpoint() {
             "message": "Mode cc, Enabled, V 3.290, I 0.499, P 1.642",
             "value": {
                 "mode": "cc", "input_enabled": true,
-                "measured_voltage": 3.29, "measured_current": 0.499, "measured_power": 1.642
+                "measured_voltage": 3.29, "measured_current": 0.499, "measured_power": 1.642,
+                "current_setting": 0.5
             }
         }));
     });
@@ -278,6 +286,9 @@ fn eload_set_state_and_setpoint() {
     assert_eq!(st.mode.as_deref(), Some("cc"));
     assert_eq!(st.input_enabled, Some(true));
     assert_eq!(st.measured_current, Some(0.499));
+    assert_eq!(st.current_setting, Some(0.5));
+    assert_eq!(st.voltage_setting, None);
+    assert!(st.extra.is_empty());
     assert_eq!(eload.setpoint(EloadMode::Cv).unwrap(), 3.3);
     set.assert();
     state.assert();
@@ -400,10 +411,28 @@ fn solar_resistance_read_and_set() {
     });
     let lager = client(&server);
     let solar = lager.solar("solar1");
-    assert_eq!(solar.resistance().unwrap(), 4.0);
-    assert_eq!(solar.set_resistance(2.5).unwrap(), 2.5);
+    assert_eq!(solar.resistance().unwrap(), Some(4.0));
+    assert_eq!(solar.set_resistance(2.5).unwrap(), Some(2.5));
     read.assert();
     set.assert();
+}
+
+#[test]
+fn solar_resistance_not_available_is_none() {
+    // The EA driver answers "n/a" when Voc / Isc cannot be computed, and
+    // net_command passes the string through as `value`.
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "solar1", "role": "solar", "action": "resistance", "params": {}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "resistance", "message": "n/a", "value": "n/a"
+        }));
+    });
+    let lager = client(&server);
+    assert_eq!(lager.solar("solar1").resistance().unwrap(), None);
+    m.assert();
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +721,170 @@ fn battery_setters_and_state() {
     mode.assert();
     enable.assert();
     state.assert();
+}
+
+#[test]
+fn supply_setpoints_with_protection_limits_and_mode() {
+    let server = MockServer::start();
+    let volts = server.mock(|when, then| {
+        when.method(POST).path("/supply/command").json_body(json!({
+            "netname": "supply1", "action": "voltage",
+            "params": {"value": 3.3, "ocp": 0.5, "ovp": 3.6}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "voltage",
+            "message": "Voltage set to 3.3V, OCP 0.5A, OVP 3.6V"
+        }));
+    });
+    // Only the limit that is given goes on the wire.
+    let amps = server.mock(|when, then| {
+        when.method(POST).path("/supply/command").json_body(json!({
+            "netname": "supply1", "action": "current", "params": {"value": 0.2, "ocp": 0.25}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "current",
+            "message": "Current limit set to 0.2A, OCP 0.25A"
+        }));
+    });
+    let mode = server.mock(|when, then| {
+        when.method(POST).path("/supply/command").json_body(json!({
+            "netname": "supply1", "action": "set_mode", "params": {}
+        }));
+        then.status(200).json_body(
+            json!({"success": true, "action": "set_mode", "message": "Power supply mode set"}),
+        );
+    });
+    let lager = client(&server);
+    let supply = lager.supply("supply1");
+    supply
+        .set_voltage_with(
+            3.3,
+            &ProtectionLimits {
+                ocp: Some(0.5),
+                ovp: Some(3.6),
+            },
+        )
+        .unwrap();
+    supply
+        .set_current_with(
+            0.2,
+            &ProtectionLimits {
+                ocp: Some(0.25),
+                ..ProtectionLimits::default()
+            },
+        )
+        .unwrap();
+    supply.set_mode().unwrap();
+    volts.assert();
+    amps.assert();
+    mode.assert();
+}
+
+#[test]
+fn supply_protection_limit_rejection_is_box_error() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/supply/command");
+        then.status(400).json_body(json!({
+            "success": false, "error": "OVP 40.0V exceeds the channel's OVP maximum 35.2V"
+        }));
+    });
+    let lager = client(&server);
+    let err = lager
+        .supply("supply1")
+        .set_voltage_with(
+            3.3,
+            &ProtectionLimits {
+                ovp: Some(40.0),
+                ..ProtectionLimits::default()
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(err, Error::Box { status: 400, .. }), "{err:?}");
+    m.assert();
+}
+
+#[test]
+fn battery_model_catalog_export_and_create() {
+    let server = MockServer::start();
+    let list = server.mock(|when, then| {
+        when.method(POST).path("/battery/command").json_body(json!({
+            "netname": "battery1", "action": "list_models", "params": {}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "list_models", "message": "...",
+            "models": [
+                {"slot": 3, "name": null},
+                {"slot": null, "name": "LI-ION 18650"}
+            ]
+        }));
+    });
+    let export = server.mock(|when, then| {
+        when.method(POST).path("/battery/command").json_body(json!({
+            "netname": "battery1", "action": "export_model", "params": {"slot": 3}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "export_model", "message": "Slot 3: 2 points",
+            "model": {"slot": 3, "points": [
+                {"voc": 3.0, "resistance": 0.2},
+                {"voc": 4.2, "resistance": 0.1}
+            ]}
+        }));
+    });
+    let create = server.mock(|when, then| {
+        when.method(POST).path("/battery/command").json_body(json!({
+            "netname": "battery1", "action": "create_model",
+            "params": {"slot": 4, "voc": [3.0, 4.2], "resistance": [0.2, 0.1]}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "create_model",
+            "message": "Battery model saved to slot 4 (2 points).",
+            "model": {"slot": 4, "points": 2}
+        }));
+    });
+    let lager = client(&server);
+    let battery = lager.battery("battery1");
+
+    let models = battery.models().unwrap();
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].slot, Some(3));
+    assert_eq!(models[0].name, None);
+    assert_eq!(models[1].slot, None);
+    assert_eq!(models[1].name.as_deref(), Some("LI-ION 18650"));
+
+    let model = battery.export_model(3).unwrap();
+    assert_eq!(model.slot, Some(3));
+    assert_eq!(model.points.len(), 2);
+    assert_eq!(model.points[1].voc, 4.2);
+    assert_eq!(model.points[1].resistance, 0.1);
+
+    battery.create_model(4, &[3.0, 4.2], &[0.2, 0.1]).unwrap();
+    list.assert();
+    export.assert();
+    create.assert();
+}
+
+#[test]
+fn battery_driver_rejection_is_box_error() {
+    // Driver validation failures come back as success:false at HTTP 200.
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/battery/command");
+        then.status(200).json_body(json!({
+            "success": false, "action": "export_model",
+            "error": "Battery model slot 5 is empty"
+        }));
+    });
+    let lager = client(&server);
+    let err = lager.battery("battery1").export_model(5).unwrap_err();
+    match err {
+        Error::Box { status, message } => {
+            assert_eq!(status, 200);
+            assert!(message.contains("slot 5 is empty"), "{message}");
+        }
+        other => panic!("expected Error::Box, got {other:?}"),
+    }
+    m.assert();
 }
 
 // ---------------------------------------------------------------------------
