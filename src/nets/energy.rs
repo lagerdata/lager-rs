@@ -50,8 +50,10 @@ pub(crate) mod ops {
 net_handle! {
     /// Handle for an energy-analyzer net.
     ///
-    /// The box clamps integration windows to 0.1–120 seconds. The HTTP
-    /// timeout is widened automatically to cover the window.
+    /// The box clamps integration windows to 0.1–120 seconds without
+    /// reporting it: a `duration` outside that range runs for the nearest
+    /// bound. Check [`EnergyReading::duration_s`] for the window actually
+    /// used. The HTTP timeout is widened automatically to cover the window.
     sync: EnergyAnalyzer,
     async: AsyncEnergyAnalyzer,
     methods: {

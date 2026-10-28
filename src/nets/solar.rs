@@ -12,7 +12,7 @@ pub(crate) mod ops {
 
     use serde_json::json;
 
-    use crate::wire::{net_command, unit, value_f64, Op, Timeout};
+    use crate::wire::{net_command, unit, value_f64, value_opt_f64, Op, Timeout};
 
     const ROLE: &str = "solar";
 
@@ -78,12 +78,27 @@ pub(crate) mod ops {
         read(name, "mpp_voltage")
     }
 
-    pub(crate) fn resistance(name: &str) -> Op<f64> {
-        read(name, "resistance")
+    // The box answers "n/a" for the panel resistance when it cannot compute
+    // Voc / Isc (an unparseable reply or Isc <= 0), so both directions come
+    // back as an Option instead of failing to decode.
+    pub(crate) fn resistance(name: &str) -> Op<Option<f64>> {
+        Op {
+            req: net_command(name, ROLE, "resistance", json!({}), read_timeout()),
+            parse: value_opt_f64,
+        }
     }
 
-    pub(crate) fn set_resistance(name: &str, ohms: f64) -> Op<f64> {
-        write(name, "resistance", ohms)
+    pub(crate) fn set_resistance(name: &str, ohms: f64) -> Op<Option<f64>> {
+        Op {
+            req: net_command(
+                name,
+                ROLE,
+                "resistance",
+                json!({ "value": ohms }),
+                read_timeout(),
+            ),
+            parse: value_opt_f64,
+        }
     }
 
     pub(crate) fn temperature(name: &str) -> Op<f64> {
@@ -112,10 +127,15 @@ net_handle! {
         fn mpp_current() -> f64 = ops::mpp_current;
         /// Read the maximum-power-point voltage (V).
         fn mpp_voltage() -> f64 = ops::mpp_voltage;
-        /// Read the dynamic panel resistance (Voc / Isc, ohm).
-        fn resistance() -> f64 = ops::resistance;
-        /// Set the dynamic panel resistance (ohm); returns the applied value.
-        fn set_resistance(ohms: f64) -> f64 = ops::set_resistance;
+        /// Read the dynamic panel resistance (Voc / Isc, ohm). `None` when
+        /// the instrument's Voc or Isc reply cannot be used (Isc <= 0, or
+        /// an unparseable reply).
+        fn resistance() -> Option<f64> = ops::resistance;
+        /// Set the dynamic panel resistance (ohm) and return the resistance
+        /// the box reports afterwards. Compare it with `ohms`: when the set
+        /// fails, the box answers with the unchanged resistance, not an
+        /// error.
+        fn set_resistance(ohms: f64) -> Option<f64> = ops::set_resistance;
         /// Read the cell temperature (°C).
         fn temperature() -> f64 = ops::temperature;
         /// Read the open-circuit voltage (V).

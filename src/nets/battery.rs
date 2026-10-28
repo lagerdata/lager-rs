@@ -1,7 +1,7 @@
 //! Battery-simulator nets (Keithley 2281S in battery mode).
 
 use super::net_handle;
-pub use crate::wire::BatteryState;
+pub use crate::wire::{BatteryModel, BatteryModelEntry, BatteryModelPoint, BatteryState};
 
 /// Battery simulation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +26,11 @@ pub(crate) mod ops {
     use serde_json::json;
 
     use super::BatteryMode;
-    use crate::wire::{battery_command, state_as, unit, BatteryState, Op};
+    use crate::error::Result;
+    use crate::wire::{
+        battery_command, extra_as, state_as, unit, BatteryModel, BatteryModelEntry, BatteryState,
+        CommandResponse, Op,
+    };
 
     fn set_value(name: &str, action: &'static str, value: f64) -> Op<()> {
         Op {
@@ -112,6 +116,39 @@ pub(crate) mod ops {
         simple(name, "clear")
     }
 
+    fn parse_models(resp: CommandResponse) -> Result<Vec<BatteryModelEntry>> {
+        extra_as(resp, "models")
+    }
+
+    fn parse_model(resp: CommandResponse) -> Result<BatteryModel> {
+        extra_as(resp, "model")
+    }
+
+    pub(crate) fn models(name: &str) -> Op<Vec<BatteryModelEntry>> {
+        Op {
+            req: battery_command(name, "list_models", json!({})),
+            parse: parse_models,
+        }
+    }
+
+    pub(crate) fn export_model(name: &str, slot: u8) -> Op<BatteryModel> {
+        Op {
+            req: battery_command(name, "export_model", json!({ "slot": slot })),
+            parse: parse_model,
+        }
+    }
+
+    pub(crate) fn create_model(name: &str, slot: u8, voc: &[f64], resistance: &[f64]) -> Op<()> {
+        Op {
+            req: battery_command(
+                name,
+                "create_model",
+                json!({ "slot": slot, "voc": voc, "resistance": resistance }),
+            ),
+            parse: unit,
+        }
+    }
+
     pub(crate) fn state(name: &str) -> Op<BatteryState> {
         Op {
             req: battery_command(name, "state", json!({})),
@@ -152,6 +189,21 @@ net_handle! {
         fn set_mode(mode: BatteryMode) -> () = ops::set_mode;
         /// Load a predefined battery model by part number.
         fn set_model(partnumber: &str) -> () = ops::set_model;
+        /// List the models the instrument holds: its built-in models (with
+        /// a name) and the occupied memory slots 1-9 (by slot only).
+        /// Read-only.
+        fn models() -> Vec<BatteryModelEntry> = ops::models;
+        /// Read the curve saved in memory slot `slot` (1-9). Read-only; the
+        /// active model does not change. Fails when the slot is empty.
+        fn export_model(slot: u8) -> BatteryModel = ops::export_model;
+        /// Write a model into memory slot `slot` (1-9), **overwriting**
+        /// whatever the slot held: the instrument has no way to delete or
+        /// protect a slot. `voc` (V, non-decreasing, 0 < v <= 60) and
+        /// `resistance` (ohm, non-increasing, 0 < r <= 100) are indexed by
+        /// state of charge, empty first, and must both have exactly 11 or
+        /// 101 points; 11 points are interpolated to 101 on the instrument.
+        /// The box validates the curves before writing anything.
+        fn create_model(slot: u8, voc: &[f64], resistance: &[f64]) -> () = ops::create_model;
         /// Enable the simulator output.
         fn enable() -> () = ops::enable;
         /// Disable the simulator output. Call this in test teardown.

@@ -684,6 +684,19 @@ pub fn value_f64(resp: CommandResponse) -> Result<f64> {
         .ok_or_else(|| Error::Decode(format!("expected numeric 'value', got {:?}", resp.value)))
 }
 
+/// Extract the `value` field as an `f64`, or `None` when the box sent a
+/// non-numeric reading in its place (such as the solar driver's `"n/a"`).
+pub fn value_opt_f64(resp: CommandResponse) -> Result<Option<f64>> {
+    match resp.value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => Ok(n.as_f64()),
+        Some(Value::String(s)) => Ok(s.trim().parse().ok()),
+        other => Err(Error::Decode(format!(
+            "expected numeric 'value' or a non-numeric reading, got {other:?}"
+        ))),
+    }
+}
+
 /// Extract the `value` field as an `i64` (accepting numeric strings).
 pub fn value_i64(resp: CommandResponse) -> Result<i64> {
     resp.value
@@ -753,6 +766,17 @@ pub fn state_as<T: DeserializeOwned>(resp: CommandResponse) -> Result<T> {
         .state
         .ok_or_else(|| Error::Decode("response has no 'state' field".to_string()))?;
     serde_json::from_value(v).map_err(|e| Error::Decode(format!("invalid 'state' shape: {e}")))
+}
+
+/// Deserialize a top-level envelope field other than `value` / `state`
+/// (such as the battery `models` / `model` payloads), which the envelope
+/// keeps in [`CommandResponse::extra`].
+pub fn extra_as<T: DeserializeOwned>(mut resp: CommandResponse, key: &str) -> Result<T> {
+    let v = resp
+        .extra
+        .remove(key)
+        .ok_or_else(|| Error::Decode(format!("response has no '{key}' field")))?;
+    serde_json::from_value(v).map_err(|e| Error::Decode(format!("invalid '{key}' shape: {e}")))
 }
 
 /// Interpret a nets-list body into raw JSON values. `/nets/list` returns a
@@ -1052,6 +1076,44 @@ pub struct BatteryState {
     pub ovp_tripped: Option<bool>,
 }
 
+/// One model in a battery simulator's catalog, from
+/// [`Battery::models`](crate::Battery::models).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct BatteryModelEntry {
+    /// Memory slot (1-9) holding a saved model, or `None` for one of the
+    /// instrument's built-in models.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub slot: Option<i64>,
+    /// Model name. Built-in models have one; saved slots do not, because
+    /// the instrument stores them by index only.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// One point of a battery model curve, indexed by state of charge.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct BatteryModelPoint {
+    /// Open-circuit voltage at this point (V).
+    pub voc: f64,
+    /// Internal resistance at this point (ohm).
+    pub resistance: f64,
+}
+
+/// A saved battery model, from
+/// [`Battery::export_model`](crate::Battery::export_model).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct BatteryModel {
+    /// Memory slot the model was read from.
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub slot: Option<i64>,
+    /// Curve points in state-of-charge order (index 0 = empty).
+    #[serde(default)]
+    pub points: Vec<BatteryModelPoint>,
+}
+
 /// Structured e-load state from the `state` action on `POST /net/command`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EloadState {
@@ -1070,6 +1132,18 @@ pub struct EloadState {
     /// Measured power (W).
     #[serde(default, deserialize_with = "lenient::opt_f64")]
     pub measured_power: Option<f64>,
+    /// Constant-current setpoint (A). Sent only in CC mode.
+    #[serde(default, deserialize_with = "lenient::opt_f64")]
+    pub current_setting: Option<f64>,
+    /// Constant-voltage setpoint (V). Sent only in CV mode.
+    #[serde(default, deserialize_with = "lenient::opt_f64")]
+    pub voltage_setting: Option<f64>,
+    /// Constant-resistance setpoint (ohm). Sent only in CR mode.
+    #[serde(default, deserialize_with = "lenient::opt_f64")]
+    pub resistance_setting: Option<f64>,
+    /// Constant-power setpoint (W). Sent only in CP mode.
+    #[serde(default, deserialize_with = "lenient::opt_f64")]
+    pub power_setting: Option<f64>,
     /// Any extra driver-specific fields.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -1098,9 +1172,15 @@ pub struct EnergyReading {
     /// Integrated energy (J).
     #[serde(default, deserialize_with = "lenient::opt_f64")]
     pub energy_j: Option<f64>,
+    /// Integrated energy (Wh): `energy_j / 3600`.
+    #[serde(default, deserialize_with = "lenient::opt_f64")]
+    pub energy_wh: Option<f64>,
     /// Integrated charge (C).
     #[serde(default, deserialize_with = "lenient::opt_f64")]
     pub charge_c: Option<f64>,
+    /// Integrated charge (Ah): `charge_c / 3600`.
+    #[serde(default, deserialize_with = "lenient::opt_f64")]
+    pub charge_ah: Option<f64>,
     /// Actual integration window (s).
     #[serde(default, deserialize_with = "lenient::opt_f64")]
     pub duration_s: Option<f64>,

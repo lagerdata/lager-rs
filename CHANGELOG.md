@@ -4,6 +4,36 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`Supply::set_voltage_with()` / `set_current_with()`** set a setpoint and
+  any of the OCP/OVP limits in one request, taking a new `ProtectionLimits`.
+  Each limit given is also enabled, as with `set_ocp()` / `set_ovp()`.
+- **`Supply::set_mode()`** switches a Keithley 2281S into power-supply mode
+  after it was used as a battery simulator. It is a no-op on other supplies.
+- **`Battery::models()`, `export_model(slot)` and `create_model(slot, voc,
+  resistance)`** list, read and write the simulator's battery models, with
+  new `BatteryModelEntry`, `BatteryModel` and `BatteryModelPoint` types.
+  `create_model` overwrites the slot: the instrument cannot delete or protect
+  one.
+- **`EloadState` gains `current_setting`, `voltage_setting`,
+  `resistance_setting` and `power_setting`**, the setpoint for the active
+  mode, which the box already sent. Previously they were only in `extra`.
+- **`EnergyReading` gains `energy_wh` and `charge_ah`**, which the box
+  already sent. Previously they were only in `extra`.
+
+### Changed
+
+- **`Solar::resistance()` and `set_resistance()` return `Option<f64>`**, not
+  `f64`. When the box cannot compute the panel resistance (Isc <= 0 or an
+  unparseable instrument reply) it answers `"n/a"`, which used to fail with
+  `Error::Decode`; it is now `None`. A failed `set_resistance()` returns the
+  unchanged resistance, not an error, so compare the result with the value you
+  set.
+- The `EnergyAnalyzer` docs now say that the box silently clamps the
+  integration window to 0.1-120 s; `EnergyReading::duration_s` reports the
+  window actually used.
+
 ## [0.8.0] - 2026-10-26
 
 Catches the crate up with box software 0.44.0 through 0.60.0. Several return types
