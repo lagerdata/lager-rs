@@ -1349,6 +1349,30 @@ fn dfu_missing_route_is_unsupported() {
     );
 }
 
+#[test]
+fn dfu_timeout_sends_box_budget() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/usb/dfu").json_body(json!({
+            "action": "detach", "params": {"vid_pid": "0483:df11", "timeout_seconds": 300}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "detach", "message": "dfu-util exited 0",
+            "value": {"exit_code": 0, "stdout": "", "stderr": ""}
+        }));
+    });
+    let lager = client(&server);
+    lager
+        .dfu()
+        .detach(&lager::DfuOptions {
+            vid_pid: Some("0483:df11".into()),
+            timeout_seconds: Some(300),
+            ..Default::default()
+        })
+        .unwrap();
+    m.assert();
+}
+
 // ---------------------------------------------------------------------------
 // Box lock / reservation
 // ---------------------------------------------------------------------------
@@ -2274,6 +2298,177 @@ fn blufi_provision_wifi_scan_status_version() {
     wifi_scan.assert();
     status.assert();
     version.assert();
+}
+
+#[test]
+fn ble_scan_exact_and_connect_timeouts() {
+    let server = MockServer::start();
+    let scan = server.mock(|when, then| {
+        when.method(POST).path("/ble/command").json_body(json!({
+            "action": "scan", "params": {"timeout": 5.0, "name_exact": "DUT-01"}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "scan", "message": "Found 1 device(s)",
+            "value": {"devices": [
+                {"name": "DUT-01", "address": "AA:BB:CC:DD:EE:FF", "rssi": -55, "uuids": []}
+            ]}
+        }));
+    });
+    let info = server.mock(|when, then| {
+        when.method(POST).path("/ble/command").json_body(json!({
+            "action": "info", "params": {"address": "AA:BB:CC:DD:EE:FF", "timeout": 30.0}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "info", "message": "Connected to AA:BB:CC:DD:EE:FF: 0 service(s)",
+            "value": {"address": "AA:BB:CC:DD:EE:FF", "connected": true, "services": []}
+        }));
+    });
+    let connect = server.mock(|when, then| {
+        when.method(POST).path("/ble/command").json_body(json!({
+            "action": "connect", "params": {"address": "AA:BB:CC:DD:EE:FF", "timeout": 25.0}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "connect", "message": "Connected to AA:BB:CC:DD:EE:FF: 0 service(s)",
+            "value": {"address": "AA:BB:CC:DD:EE:FF", "connected": true, "services": []}
+        }));
+    });
+    let lager = client(&server);
+    let ble = lager.ble();
+    assert_eq!(ble.scan_exact(5.0, "DUT-01").unwrap().len(), 1);
+    ble.info_with_timeout("AA:BB:CC:DD:EE:FF", 30.0).unwrap();
+    ble.connect_with_timeout("AA:BB:CC:DD:EE:FF", 25.0).unwrap();
+    scan.assert();
+    info.assert();
+    connect.assert();
+}
+
+#[test]
+fn wifi_connect_on_names_the_interface() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(POST).path("/wifi/command").json_body(json!({
+            "action": "connect",
+            "params": {"ssid": "labnet", "password": "pw", "interface": "wlan1"}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "connect", "message": "Connected to labnet",
+            "value": {"ssid": "labnet", "connected": true, "interface": "wlan1", "method": "nmcli"}
+        }));
+    });
+    let lager = client(&server);
+    let conn = lager.wifi().connect_on("labnet", "pw", "wlan1").unwrap();
+    assert_eq!(conn.interface.as_deref(), Some("wlan1"));
+    m.assert();
+}
+
+#[test]
+fn blufi_scan_including_and_wifi_scan_for() {
+    let server = MockServer::start();
+    let scan = server.mock(|when, then| {
+        when.method(POST).path("/blufi/command").json_body(json!({
+            "action": "scan", "params": {"timeout": 5.0, "name_contains": "ESP"}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "scan", "message": "Found 1 BluFi device(s)",
+            "value": {"devices": [
+                {"name": "ESP_TARGET", "address": "AA:BB:CC:DD:EE:01", "rssi": -60, "uuids": []}
+            ]}
+        }));
+    });
+    let wifi_scan = server.mock(|when, then| {
+        when.method(POST).path("/blufi/command").json_body(json!({
+            "action": "wifi_scan",
+            "params": {"device_name": "ESP_TARGET", "timeout": 20.0, "scan_timeout": 40.0}
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": "wifi_scan", "message": "Found 1 network(s)",
+            "value": {"device_name": "ESP_TARGET", "networks": [{"ssid": "labnet", "rssi": -40}]}
+        }));
+    });
+    let lager = client(&server);
+    let blufi = lager.blufi();
+    assert_eq!(blufi.scan_including(5.0, "ESP").unwrap().len(), 1);
+    assert_eq!(blufi.wifi_scan_for("ESP_TARGET", 40.0).unwrap().len(), 1);
+    scan.assert();
+    wifi_scan.assert();
+}
+
+// ---------------------------------------------------------------------------
+// UART sessions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn uart_sessions_lists_holders() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(GET).path("/uart/sessions");
+        then.status(200).json_body(json!({"sessions": [
+            {
+                "netname": "uart1", "device_path": "/dev/ttyACM1", "sid": "abc123",
+                "heartbeat_age_seconds": 0.05, "client_connected": true, "reader_alive": true
+            },
+            {
+                "netname": "uart2", "device_path": null, "sid": "def456",
+                "heartbeat_age_seconds": null, "client_connected": null, "reader_alive": null
+            }
+        ]}));
+    });
+    let lager = client(&server);
+    let sessions = lager.uart_sessions().unwrap();
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0].netname.as_deref(), Some("uart1"));
+    assert_eq!(sessions[0].client_connected, Some(true));
+    assert_eq!(sessions[1].reader_alive, None);
+    m.assert();
+}
+
+#[test]
+fn release_uart_session_returns_released_ids() {
+    let server = MockServer::start();
+    let m = server.mock(|when, then| {
+        when.method(DELETE).path("/uart/sessions/dut%20uart");
+        then.status(200)
+            .json_body(json!({"released": ["abc123"], "netname": "dut uart"}));
+    });
+    let lager = client(&server);
+    assert_eq!(
+        lager.release_uart_session("dut uart").unwrap(),
+        vec!["abc123"]
+    );
+    m.assert();
+}
+
+#[test]
+fn release_uart_session_with_no_holder_is_404() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(DELETE).path("/uart/sessions/uart1");
+        then.status(404).json_body(json!({
+            "error": "No UART session is holding net 'uart1'", "released": []
+        }));
+    });
+    let lager = client(&server);
+    match lager.release_uart_session("uart1").unwrap_err() {
+        Error::Box { status, message } => {
+            assert_eq!(status, 404);
+            assert!(message.contains("No UART session"), "{message}");
+        }
+        other => panic!("expected Error::Box, got {other:?}"),
+    }
+}
+
+#[test]
+fn uart_sessions_missing_route_is_unsupported() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(GET).path("/uart/sessions");
+        then.status(404)
+            .header("content-type", "text/html")
+            .body("<!doctype html><title>404 Not Found</title>");
+    });
+    let lager = client(&server);
+    let err = lager.uart_sessions().unwrap_err();
+    assert!(matches!(err, Error::UnsupportedByBox { .. }), "{err:?}");
 }
 
 #[test]
@@ -3283,6 +3478,24 @@ mod async_parity {
             .await;
         let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();
         assert_eq!(lager.adc("adc1").read().await.unwrap(), 1.5);
+        m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn async_release_uart_session_sends_delete() {
+        let server = MockServer::start_async().await;
+        let m = server
+            .mock_async(|when, then| {
+                when.method(DELETE).path("/uart/sessions/uart1");
+                then.status(200)
+                    .json_body(json!({"released": ["abc123"], "netname": "uart1"}));
+            })
+            .await;
+        let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();
+        assert_eq!(
+            lager.release_uart_session("uart1").await.unwrap(),
+            vec!["abc123"]
+        );
         m.assert_async().await;
     }
 

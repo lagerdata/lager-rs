@@ -33,6 +33,8 @@ pub enum Method {
     Post,
     /// HTTP PUT with a JSON body (`/nets/<name>/safety-limits`).
     Put,
+    /// HTTP DELETE (`/uart/sessions/<net>`).
+    Delete,
 }
 
 /// Client-side timeout policy for one request.
@@ -1996,6 +1998,109 @@ pub(crate) fn nets_state_unsupported() -> Error {
     }
 }
 
+// ---------------------------------------------------------------------------
+// UART sessions (GET /uart/sessions, DELETE /uart/sessions/<net>)
+// ---------------------------------------------------------------------------
+
+/// A UART session holding a net, from
+/// [`LagerBox::uart_sessions`](crate::LagerBox::uart_sessions).
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct UartSession {
+    /// The net the session holds.
+    #[serde(default)]
+    pub netname: Option<String>,
+    /// Serial device on the box (e.g. `/dev/ttyACM1`).
+    #[serde(default)]
+    pub device_path: Option<String>,
+    /// The box's Socket.IO session id.
+    #[serde(default)]
+    pub sid: Option<String>,
+    /// Seconds since the session's read loop last made progress.
+    #[serde(default, deserialize_with = "lenient::opt_f64")]
+    pub heartbeat_age_seconds: Option<f64>,
+    /// Whether the client behind the session is still connected; `None`
+    /// when the box cannot tell.
+    #[serde(default, deserialize_with = "lenient::opt_bool")]
+    pub client_connected: Option<bool>,
+    /// Whether the session's read loop is alive; `None` while the session is
+    /// still starting.
+    #[serde(default, deserialize_with = "lenient::opt_bool")]
+    pub reader_alive: Option<bool>,
+}
+
+/// Percent-encode one URL path segment (a net name), leaving only RFC 3986
+/// unreserved characters bare.
+pub(crate) fn path_segment(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Build a `GET /uart/sessions` request.
+pub fn uart_sessions() -> HttpRequest {
+    get("/uart/sessions")
+}
+
+/// Build a `DELETE /uart/sessions/<net>` request.
+pub fn release_uart_session(netname: &str) -> HttpRequest {
+    HttpRequest {
+        method: Method::Delete,
+        path: format!("/uart/sessions/{}", path_segment(netname)),
+        body: None,
+        timeout: Timeout::Default,
+    }
+}
+
+fn body_error(status: u16, body: &Value, fallback: &str) -> Error {
+    let message = body
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or(fallback)
+        .to_string();
+    Error::Box { status, message }
+}
+
+/// Parse a `GET /uart/sessions` response.
+pub fn parse_uart_sessions(status: u16, mut body: Value) -> Result<Vec<UartSession>> {
+    if status != 200 {
+        return Err(body_error(status, &body, "uart/sessions request failed"));
+    }
+    let sessions = body
+        .get_mut("sessions")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
+    serde_json::from_value(sessions)
+        .map_err(|e| Error::Decode(format!("invalid uart/sessions shape: {e}")))
+}
+
+/// Parse a `DELETE /uart/sessions/<net>` response into the released session
+/// ids. The box answers 404 with a JSON error when nothing holds the net.
+pub fn parse_release_uart_session(status: u16, mut body: Value) -> Result<Vec<String>> {
+    if status != 200 {
+        return Err(body_error(status, &body, "uart session release failed"));
+    }
+    let released = body
+        .get_mut("released")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
+    serde_json::from_value(released)
+        .map_err(|e| Error::Decode(format!("invalid uart session release shape: {e}")))
+}
+
+pub(crate) fn uart_sessions_unsupported() -> Error {
+    Error::UnsupportedByBox {
+        message: "this box does not serve /uart/sessions (requires box software >= 0.46.0)"
+            .to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2149,5 +2254,11 @@ mod tests {
         // A box predating the flag omits the key, which reads as false.
         let caps: BoxCapabilities = serde_json::from_value(json!({"netCommand": true})).unwrap();
         assert!(!caps.safety_limits);
+    }
+    #[test]
+    fn path_segment_encodes_reserved_bytes() {
+        assert_eq!(path_segment("uart1"), "uart1");
+        assert_eq!(path_segment("dut uart/2"), "dut%20uart%2F2");
+        assert_eq!(path_segment("a.b_c-d~"), "a.b_c-d~");
     }
 }

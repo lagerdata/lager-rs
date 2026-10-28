@@ -35,7 +35,7 @@ use crate::nets::webcam::AsyncWebcam;
 use crate::nets::wifi::AsyncWifi;
 use crate::wire::{
     self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, NetState, Op, SafetyLimits,
-    Timeout, UsbDeviceFilter, UsbDeviceInfo,
+    Timeout, UartSession, UsbDeviceFilter, UsbDeviceInfo,
 };
 
 /// A connection to one Lager box, over async HTTP (reqwest/tokio).
@@ -404,6 +404,7 @@ impl AsyncLagerBox {
             Method::Get => self.http.get(&url),
             Method::Post => self.http.post(&url),
             Method::Put => self.http.put(&url),
+            Method::Delete => self.http.delete(&url),
         };
         match req.timeout {
             Timeout::Default => r = r.timeout(self.default_timeout),
@@ -634,6 +635,29 @@ impl AsyncLagerBox {
         match self.execute(&wire::nets_state()).await {
             Ok((status, body)) => wire::parse_nets_state(status, body),
             Err(e) => Err(wire::map_route_missing(e, wire::nets_state_unsupported)),
+        }
+    }
+
+    /// The UART sessions currently holding a net (`GET /uart/sessions`,
+    /// box >= 0.46.0), with liveness detail to tell a live session from one
+    /// that should be gone. Read-only.
+    pub async fn uart_sessions(&self) -> Result<Vec<UartSession>> {
+        match self.execute(&wire::uart_sessions()).await {
+            Ok((status, body)) => wire::parse_uart_sessions(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::uart_sessions_unsupported)),
+        }
+    }
+
+    /// Force-release the UART session holding `name`
+    /// (`DELETE /uart/sessions/<name>`, box >= 0.46.0) and return the
+    /// released session ids. The holder loses the port at once, so use this
+    /// for a session that should be gone, such as one left by a crashed
+    /// test. Fails with [`Error::Box`] status 404 when no session holds the
+    /// net.
+    pub async fn release_uart_session(&self, name: &str) -> Result<Vec<String>> {
+        match self.execute(&wire::release_uart_session(name)).await {
+            Ok((status, body)) => wire::parse_release_uart_session(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::uart_sessions_unsupported)),
         }
     }
 

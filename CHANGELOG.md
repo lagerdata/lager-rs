@@ -21,6 +21,31 @@ All notable changes to the `lager-net` crate are documented here.
   mode, which the box already sent. Previously they were only in `extra`.
 - **`EnergyReading` gains `energy_wh` and `charge_ah`**, which the box
   already sent. Previously they were only in `extra`.
+- **`LagerBox::uart_with(name, &UartConfig)`** opens a UART session with its
+  own serial settings (baud rate, data bits, `Parity`, `StopBits`, XON/XOFF,
+  RTS/CTS, DSR/DTR, `opost`). Fields left `None` keep the net's saved
+  settings, and the saved net is never changed. `uart()` still opens with the
+  saved settings.
+- **`LagerBox::uart_sessions()` / `release_uart_session(name)`** (both
+  clients) list the UART sessions holding a net, with liveness detail, and
+  force-release one (box >= 0.46.0; older boxes fail with
+  `Error::UnsupportedByBox`).
+- **`Error::UartInUse`** when a UART session cannot start because another
+  session holds the net or its serial device. `held_by` names the net to
+  release (box >= 0.49.0), which is the other net when two nets share one
+  device.
+- **`Ble::scan_exact()`** (exact name match), and **`Ble::info_with_timeout()`
+  / `connect_with_timeout()`** for a device that needs longer than the default
+  10 s connect timeout.
+- **`Wifi::connect_on(ssid, password, interface)`** joins a network on an
+  interface other than `wlan0`.
+- **`Blufi::scan_including(timeout, name_contains)`** also returns devices
+  that advertise only a name and not the BluFi service UUID, and
+  **`Blufi::wifi_scan_for(device_name, scan_timeout)`** gives the target
+  longer than the default 15 s for its WiFi scan.
+- **`DfuOptions::timeout_seconds`** sets how long the box lets `dfu-util` run
+  (box default 120 s, maximum 600 s), and the crate widens its HTTP timeout to
+  match.
 
 ### Changed
 
@@ -33,6 +58,12 @@ All notable changes to the `lager-net` crate are documented here.
 - The `EnergyAnalyzer` docs now say that the box silently clamps the
   integration window to 0.1-120 s; `EnergyReading::duration_s` reports the
   window actually used.
+- **A UART "already in use" refusal is now `Error::UartInUse`**, not
+  `Error::Stream`. Other session errors are still `Error::Stream`.
+- **`wire::Method` gains a `Delete` variant** (for `release_uart_session`). An
+  exhaustive `match` on `Method` needs an arm for it.
+- **`DfuOptions` gains a field.** A struct literal without
+  `..Default::default()` needs `timeout_seconds` added.
 
 ## [0.8.0] - 2026-10-26
 

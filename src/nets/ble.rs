@@ -53,28 +53,44 @@ pub(crate) mod ops {
         }
     }
 
-    pub(crate) fn info(address: &str) -> Op<BleDeviceInfo> {
+    pub(crate) fn scan_exact(timeout: f64, name: &str) -> Op<Vec<BleDevice>> {
         Op {
             req: box_command(
                 PATH,
-                "info",
-                json!({ "address": address, "timeout": CONNECT_TIMEOUT_S }),
-                budget(CONNECT_TIMEOUT_S),
+                "scan",
+                json!({ "timeout": timeout, "name_exact": name }),
+                budget(timeout),
+            ),
+            parse: parse_devices,
+        }
+    }
+
+    fn enumerate(action: &str, address: &str, timeout: f64) -> Op<BleDeviceInfo> {
+        Op {
+            req: box_command(
+                PATH,
+                action,
+                json!({ "address": address, "timeout": timeout }),
+                budget(timeout),
             ),
             parse: value_as::<BleDeviceInfo>,
         }
     }
 
+    pub(crate) fn info(address: &str) -> Op<BleDeviceInfo> {
+        enumerate("info", address, CONNECT_TIMEOUT_S)
+    }
+
+    pub(crate) fn info_with_timeout(address: &str, timeout: f64) -> Op<BleDeviceInfo> {
+        enumerate("info", address, timeout)
+    }
+
     pub(crate) fn connect(address: &str) -> Op<BleDeviceInfo> {
-        Op {
-            req: box_command(
-                PATH,
-                "connect",
-                json!({ "address": address, "timeout": CONNECT_TIMEOUT_S }),
-                budget(CONNECT_TIMEOUT_S),
-            ),
-            parse: value_as::<BleDeviceInfo>,
-        }
+        enumerate("connect", address, CONNECT_TIMEOUT_S)
+    }
+
+    pub(crate) fn connect_with_timeout(address: &str, timeout: f64) -> Op<BleDeviceInfo> {
+        enumerate("connect", address, timeout)
     }
 
     pub(crate) fn disconnect(address: &str) -> Op<()> {
@@ -101,10 +117,20 @@ box_handle! {
         /// Scan, keeping only devices whose name contains `name_contains`
         /// (case-insensitive).
         fn scan_named(timeout: f64, name_contains: &str) -> Vec<BleDevice> = ops::scan_named;
-        /// Connect briefly and enumerate the device's GATT services.
+        /// Scan, keeping only devices whose advertised name is exactly
+        /// `name` (case-sensitive).
+        fn scan_exact(timeout: f64, name: &str) -> Vec<BleDevice> = ops::scan_exact;
+        /// Connect briefly and enumerate the device's GATT services, with a
+        /// 10 s connect timeout.
         fn info(address: &str) -> BleDeviceInfo = ops::info;
-        /// Connect to a device (and enumerate its services to verify).
+        /// [`Ble::info`] with a connect timeout of `timeout` seconds, for a
+        /// device that advertises slowly.
+        fn info_with_timeout(address: &str, timeout: f64) -> BleDeviceInfo = ops::info_with_timeout;
+        /// Connect to a device (and enumerate its services to verify), with
+        /// a 10 s connect timeout.
         fn connect(address: &str) -> BleDeviceInfo = ops::connect;
+        /// [`Ble::connect`] with a connect timeout of `timeout` seconds.
+        fn connect_with_timeout(address: &str, timeout: f64) -> BleDeviceInfo = ops::connect_with_timeout;
         /// Ensure a device is disconnected from the box.
         fn disconnect(address: &str) -> () = ops::disconnect;
     }

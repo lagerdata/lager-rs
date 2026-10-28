@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use rust_socketio::ClientBuilder;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::error::{Error, Result};
 use crate::nets::sio::{hex_decode, hex_encode, payload_json};
@@ -18,13 +18,138 @@ use crate::nets::sio::{hex_decode, hex_encode, payload_json};
 /// How long to wait for the box to confirm the serial port opened.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Parity setting for [`UartConfig::parity`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parity {
+    /// No parity bit.
+    None,
+    /// Even parity.
+    Even,
+    /// Odd parity.
+    Odd,
+    /// Parity bit always 1.
+    Mark,
+    /// Parity bit always 0.
+    Space,
+}
+
+impl Parity {
+    /// Wire encoding understood by the box.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Parity::None => "none",
+            Parity::Even => "even",
+            Parity::Odd => "odd",
+            Parity::Mark => "mark",
+            Parity::Space => "space",
+        }
+    }
+}
+
+/// Stop-bit setting for [`UartConfig::stopbits`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopBits {
+    /// One stop bit.
+    One,
+    /// One and a half stop bits.
+    OnePointFive,
+    /// Two stop bits.
+    Two,
+}
+
+impl StopBits {
+    /// Wire encoding understood by the box.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StopBits::One => "1",
+            StopBits::OnePointFive => "1.5",
+            StopBits::Two => "2",
+        }
+    }
+}
+
+/// Serial settings for one session, for
+/// [`LagerBox::uart_with`](crate::LagerBox::uart_with). Each field left
+/// `None` keeps the net's saved setting; nothing here changes the saved net.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UartConfig {
+    /// Baud rate.
+    pub baudrate: Option<u32>,
+    /// Data bits (5-8).
+    pub bytesize: Option<u8>,
+    /// Parity.
+    pub parity: Option<Parity>,
+    /// Stop bits.
+    pub stopbits: Option<StopBits>,
+    /// XON/XOFF software flow control.
+    pub xonxoff: Option<bool>,
+    /// RTS/CTS hardware flow control.
+    pub rtscts: Option<bool>,
+    /// DSR/DTR hardware flow control.
+    pub dsrdtr: Option<bool>,
+    /// Translate `\n` to `\r\n` in the data the box sends back.
+    pub opost: Option<bool>,
+}
+
+impl UartConfig {
+    fn overrides(&self) -> Value {
+        let mut o = Map::new();
+        if let Some(v) = self.baudrate {
+            o.insert("baudrate".to_string(), json!(v));
+        }
+        if let Some(v) = self.bytesize {
+            o.insert("bytesize".to_string(), json!(v));
+        }
+        if let Some(v) = self.parity {
+            o.insert("parity".to_string(), json!(v.as_str()));
+        }
+        if let Some(v) = self.stopbits {
+            o.insert("stopbits".to_string(), json!(v.as_str()));
+        }
+        if let Some(v) = self.xonxoff {
+            o.insert("xonxoff".to_string(), json!(v));
+        }
+        if let Some(v) = self.rtscts {
+            o.insert("rtscts".to_string(), json!(v));
+        }
+        if let Some(v) = self.dsrdtr {
+            o.insert("dsrdtr".to_string(), json!(v));
+        }
+        if let Some(v) = self.opost {
+            o.insert("opost".to_string(), json!(v));
+        }
+        Value::Object(o)
+    }
+}
+
 #[derive(Debug)]
 enum UartEvent {
     Connected { device_path: String, baudrate: u64 },
     Data(Vec<u8>),
     Status(String),
-    Error(String),
+    Error(Error),
     Stopped,
+}
+
+/// Turn the box's `error` event payload into an [`Error`]. A net-in-use
+/// refusal carries `code: "net_in_use"` (box >= 0.49.0); older boxes send
+/// only the message, which still says "already in use".
+fn session_error(payload: Option<&Value>) -> Error {
+    let message = payload
+        .and_then(|v| v.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown UART error")
+        .to_string();
+    let code = payload.and_then(|v| v.get("code")).and_then(Value::as_str);
+    if code == Some("net_in_use") || message.contains("already in use") {
+        let held_by = payload
+            .and_then(|v| v.get("held_by"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        Error::UartInUse { message, held_by }
+    } else {
+        Error::Stream(message)
+    }
 }
 
 /// A live UART streaming session.
@@ -47,6 +172,7 @@ impl Uart {
     pub(crate) fn open(
         base_url: &str,
         netname: String,
+        config: &UartConfig,
         bearer_token: Option<String>,
     ) -> Result<Self> {
         let (tx, rx) = std::sync::mpsc::channel::<UartEvent>();
@@ -99,13 +225,8 @@ impl Uart {
                     }
                 })
                 .on("error", move |payload, _| {
-                    let message = payload_json(payload)
-                        .as_ref()
-                        .and_then(|v| v.get("message"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown UART error")
-                        .to_string();
-                    let _ = tx_error.send(UartEvent::Error(message));
+                    let payload = payload_json(payload);
+                    let _ = tx_error.send(UartEvent::Error(session_error(payload.as_ref())));
                 })
                 .on("uart_stopped", move |_, _| {
                     let _ = tx_stopped.send(UartEvent::Stopped);
@@ -115,7 +236,10 @@ impl Uart {
         };
 
         socket
-            .emit("start_uart", json!({ "netname": netname, "overrides": {} }))
+            .emit(
+                "start_uart",
+                json!({ "netname": netname, "overrides": config.overrides() }),
+            )
             .map_err(|e| Error::Stream(format!("could not start UART session: {e}")))?;
 
         // Wait for the box to open the port (or refuse).
@@ -148,7 +272,7 @@ impl Uart {
                 }
                 // Data can beat the connected event; keep it.
                 Ok(UartEvent::Data(bytes)) => uart.buf.extend_from_slice(&bytes),
-                Ok(UartEvent::Error(msg)) => return Err(Error::Stream(msg)),
+                Ok(UartEvent::Error(err)) => return Err(err),
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
@@ -210,7 +334,7 @@ impl Uart {
                     // queued without waiting again.
                     wait = Duration::ZERO;
                 }
-                Ok(UartEvent::Error(msg)) => return Err(Error::Stream(msg)),
+                Ok(UartEvent::Error(err)) => return Err(err),
                 Ok(UartEvent::Status(status)) => self.last_status = Some(status),
                 Ok(_) => {}
                 Err(RecvTimeoutError::Timeout) => return Ok(()),
@@ -290,5 +414,61 @@ impl Uart {
 impl Drop for Uart {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_sends_no_overrides() {
+        assert_eq!(UartConfig::default().overrides(), json!({}));
+    }
+
+    #[test]
+    fn config_sends_only_the_fields_set() {
+        let cfg = UartConfig {
+            baudrate: Some(9600),
+            parity: Some(Parity::Even),
+            stopbits: Some(StopBits::OnePointFive),
+            rtscts: Some(true),
+            ..UartConfig::default()
+        };
+        assert_eq!(
+            cfg.overrides(),
+            json!({"baudrate": 9600, "parity": "even", "stopbits": "1.5", "rtscts": true})
+        );
+    }
+
+    #[test]
+    fn net_in_use_names_the_holder() {
+        let err = session_error(Some(&json!({
+            "message": "UART device /dev/ttyACM0 is already in use by net 'uart2'",
+            "code": "net_in_use", "netname": "uart1", "held_by": "uart2"
+        })));
+        match err {
+            Error::UartInUse { held_by, .. } => assert_eq!(held_by.as_deref(), Some("uart2")),
+            other => panic!("expected UartInUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn older_box_in_use_message_is_still_uart_in_use() {
+        let err = session_error(Some(&json!({
+            "message": "UART net 'uart1' is already in use by another session"
+        })));
+        assert!(
+            matches!(err, Error::UartInUse { held_by: None, .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn other_errors_stay_stream_errors() {
+        let err = session_error(Some(
+            &json!({"message": "UART device not found: /dev/ttyUSB9"}),
+        ));
+        assert!(matches!(err, Error::Stream(_)), "{err:?}");
     }
 }

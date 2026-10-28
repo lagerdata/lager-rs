@@ -46,6 +46,18 @@ pub(crate) mod ops {
         }
     }
 
+    pub(crate) fn scan_including(timeout: f64, name_contains: &str) -> Op<Vec<BleDevice>> {
+        Op {
+            req: box_command(
+                PATH,
+                "scan",
+                json!({ "timeout": timeout, "name_contains": name_contains }),
+                budget(timeout),
+            ),
+            parse: parse_devices,
+        }
+    }
+
     pub(crate) fn connect(device_name: &str) -> Op<BlufiDeviceInfo> {
         Op {
             req: box_command(
@@ -95,6 +107,22 @@ pub(crate) mod ops {
         }
     }
 
+    pub(crate) fn wifi_scan_for(device_name: &str, scan_timeout: f64) -> Op<Vec<BlufiNetwork>> {
+        Op {
+            req: box_command(
+                PATH,
+                "wifi_scan",
+                json!({
+                    "device_name": device_name,
+                    "timeout": CONNECT_TIMEOUT_S,
+                    "scan_timeout": scan_timeout,
+                }),
+                budget(CONNECT_TIMEOUT_S + scan_timeout + 15.0),
+            ),
+            parse: parse_networks,
+        }
+    }
+
     pub(crate) fn status(device_name: &str) -> Op<BlufiStatus> {
         Op {
             req: box_command(
@@ -137,6 +165,11 @@ box_handle! {
     methods: {
         /// Scan for BluFi-capable BLE devices for `timeout` seconds.
         fn scan(timeout: f64) -> Vec<BleDevice> = ops::scan;
+        /// [`Blufi::scan`], also returning devices whose name contains
+        /// `name_contains` (case-insensitive) when they do not advertise the
+        /// BluFi service UUID. Many ESP32 firmwares advertise only a name.
+        /// This widens the scan; it does not filter it.
+        fn scan_including(timeout: f64, name_contains: &str) -> Vec<BleDevice> = ops::scan_including;
         /// Connect to a target by its advertised BLE name; returns its
         /// firmware version and WiFi state.
         fn connect(device_name: &str) -> BlufiDeviceInfo = ops::connect;
@@ -147,6 +180,9 @@ box_handle! {
             -> BlufiProvisionResult = ops::provision;
         /// Ask the target to scan for WiFi networks it can see.
         fn wifi_scan(device_name: &str) -> Vec<BlufiNetwork> = ops::wifi_scan;
+        /// [`Blufi::wifi_scan`], giving the target `scan_timeout` seconds
+        /// for its WiFi scan instead of the box's 15 s default.
+        fn wifi_scan_for(device_name: &str, scan_timeout: f64) -> Vec<BlufiNetwork> = ops::wifi_scan_for;
         /// Read the target's current WiFi state.
         fn status(device_name: &str) -> BlufiStatus = ops::status;
         /// Read the target's BluFi firmware version.
