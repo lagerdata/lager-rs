@@ -33,7 +33,7 @@ use crate::nets::webcam::Webcam;
 use crate::nets::wifi::Wifi;
 use crate::wire::{
     self, BoxLock, BoxStatus, Health, HttpRequest, Method, NetRecord, NetState, Op, SafetyLimits,
-    Timeout, UsbDeviceFilter, UsbDeviceInfo,
+    Timeout, UartSession, UsbDeviceFilter, UsbDeviceInfo,
 };
 use crate::BOX_HOST_ENV;
 
@@ -449,6 +449,7 @@ impl LagerBox {
             Method::Get => self.agent.request("GET", &url),
             Method::Post => self.agent.request("POST", &url),
             Method::Put => self.agent.request("PUT", &url),
+            Method::Delete => self.agent.request("DELETE", &url),
         };
         match req.timeout {
             Timeout::Default => r = r.timeout(self.default_timeout),
@@ -786,6 +787,29 @@ impl LagerBox {
         }
     }
 
+    /// The UART sessions currently holding a net (`GET /uart/sessions`,
+    /// box >= 0.46.0), with liveness detail to tell a live session from one
+    /// that should be gone. Read-only.
+    pub fn uart_sessions(&self) -> Result<Vec<UartSession>> {
+        match self.execute(&wire::uart_sessions()) {
+            Ok((status, body)) => wire::parse_uart_sessions(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::uart_sessions_unsupported)),
+        }
+    }
+
+    /// Force-release the UART session holding `name`
+    /// (`DELETE /uart/sessions/<name>`, box >= 0.46.0) and return the
+    /// released session ids. The holder loses the port at once, so use this
+    /// for a session that should be gone, such as one left by a crashed
+    /// test. Fails with [`Error::Box`] status 404 when no session holds the
+    /// net.
+    pub fn release_uart_session(&self, name: &str) -> Result<Vec<String>> {
+        match self.execute(&wire::release_uart_session(name)) {
+            Ok((status, body)) => wire::parse_release_uart_session(status, body),
+            Err(e) => Err(wire::map_route_missing(e, wire::uart_sessions_unsupported)),
+        }
+    }
+
     /// Read the safety limits configured on a saved net, via `/nets/list`.
     /// `Ok(None)` means the net exists and is unrestricted; a missing net is
     /// an [`Error::Box`] with status 404.
@@ -989,10 +1013,24 @@ impl LagerBox {
     /// Open a streaming UART session on a UART net.
     ///
     /// Connects a Socket.IO session to the box's `/uart` namespace and
-    /// starts streaming. Only one session per net (box-enforced).
+    /// starts streaming. Only one session per net or serial device
+    /// (box-enforced): a second opener gets [`Error::UartInUse`] naming the
+    /// holder, which [`LagerBox::release_uart_session`] can free.
     #[cfg(feature = "uart")]
     pub fn uart(&self, name: impl Into<String>) -> Result<crate::nets::uart::Uart> {
-        crate::nets::uart::Uart::open(&self.base, name.into(), self.current_token())
+        self.uart_with(name, &crate::nets::uart::UartConfig::default())
+    }
+
+    /// Like [`LagerBox::uart`], with serial settings for this session only
+    /// (baud rate, framing, flow control). Fields left `None` keep the
+    /// net's saved settings, and the saved net is never changed.
+    #[cfg(feature = "uart")]
+    pub fn uart_with(
+        &self,
+        name: impl Into<String>,
+        config: &crate::nets::uart::UartConfig,
+    ) -> Result<crate::nets::uart::Uart> {
+        crate::nets::uart::Uart::open(&self.base, name.into(), config, self.current_token())
     }
 }
 

@@ -168,7 +168,7 @@ pub use nets::{
 };
 
 #[cfg(feature = "uart")]
-pub use nets::uart::Uart;
+pub use nets::uart::{Parity, StopBits, Uart, UartConfig};
 
 #[cfg(feature = "rtt")]
 pub use nets::rtt::RttSession;
@@ -183,6 +183,7 @@ pub use wire::{
     BleCharacteristic, BleDevice, BleDeviceInfo, BleService, BlufiDeviceInfo, BlufiNetwork,
     BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxLock, BoxStatus, DfuDevice, DfuOutput,
     EloadState, EnergyReading, EnergyStats, Health, NetRecord, NetState, NetSummary,
-    RouterSystemInfo, SafetyLimits, StatSummary, SupplyState, UsbDeviceFilter, UsbDeviceInfo,
-    WattReading, WebcamStatus, WebcamStream, WifiAccessPoint, WifiConnection, WifiInterface,
+    RouterSystemInfo, SafetyLimits, StatSummary, SupplyState, UartSession, UsbDeviceFilter,
+    UsbDeviceInfo, WattReading, WebcamStatus, WebcamStream, WifiAccessPoint, WifiConnection,
+    WifiInterface,
 };

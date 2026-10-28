@@ -51,6 +51,10 @@ pub struct DfuOptions {
     pub dfuse_address: Option<String>,
     /// Reset the device after download — `dfu-util -R`.
     pub reset: bool,
+    /// How long the box lets `dfu-util` run, in seconds (box default 120,
+    /// box maximum 600). Raise it for a large image on a slow bootloader;
+    /// the crate widens its HTTP timeout to match.
+    pub timeout_seconds: Option<u32>,
 }
 
 pub(crate) mod ops {
@@ -90,7 +94,19 @@ pub(crate) mod ops {
         if opts.reset {
             params["reset"] = json!(true);
         }
+        if let Some(t) = opts.timeout_seconds {
+            params["timeout_seconds"] = json!(t);
+        }
         params
+    }
+
+    /// Client budget for a dfu-util run: the box's own budget (default 120 s,
+    /// clamped to 600 s box-side) plus 60 s for the upload and queueing.
+    fn run_timeout(opts: &DfuOptions) -> Timeout {
+        match opts.timeout_seconds {
+            Some(t) => Timeout::After(Duration::from_secs(u64::from(t.clamp(1, 600)) + 60)),
+            None => RUN_TIMEOUT,
+        }
     }
 
     pub(crate) fn list() -> Op<Vec<DfuDevice>> {
@@ -104,14 +120,14 @@ pub(crate) mod ops {
         let mut p = params(opts);
         p["firmware"] = json!(base64_encode(firmware));
         Op {
-            req: box_command(PATH, "download", p, RUN_TIMEOUT),
+            req: box_command(PATH, "download", p, run_timeout(opts)),
             parse: value_as::<DfuOutput>,
         }
     }
 
     pub(crate) fn detach(opts: &DfuOptions) -> Op<DfuOutput> {
         Op {
-            req: box_command(PATH, "detach", params(opts), RUN_TIMEOUT),
+            req: box_command(PATH, "detach", params(opts), run_timeout(opts)),
             parse: value_as::<DfuOutput>,
         }
     }

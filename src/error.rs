@@ -100,9 +100,22 @@ pub enum Error {
     },
     /// Client-side configuration problem (bad host string, missing env var).
     Config(String),
-    /// A streaming session (UART) reported an error, e.g. the net is in use
-    /// by another session or the device disappeared.
+    /// A streaming session (UART) reported an error, e.g. the device
+    /// disappeared.
     Stream(String),
+    /// A UART session could not start because another session holds the
+    /// net or its serial device. If that session should be gone, free the
+    /// net with
+    /// [`LagerBox::release_uart_session`](crate::LagerBox::release_uart_session)
+    /// on `held_by` and open again.
+    UartInUse {
+        /// The box's message.
+        message: String,
+        /// The net whose session holds the port (box >= 0.49.0). When two
+        /// nets share one serial device this is the *other* net, and that
+        /// is the one to release.
+        held_by: Option<String>,
+    },
 }
 
 impl fmt::Display for Error {
@@ -167,6 +180,7 @@ impl fmt::Display for Error {
             ),
             Error::Config(msg) => write!(f, "configuration error: {msg}"),
             Error::Stream(msg) => write!(f, "streaming session error: {msg}"),
+            Error::UartInUse { message, .. } => write!(f, "UART in use: {message}"),
         }
     }
 }

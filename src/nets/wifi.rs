@@ -57,6 +57,18 @@ pub(crate) mod ops {
         }
     }
 
+    pub(crate) fn connect_on(ssid: &str, password: &str, interface: &str) -> Op<WifiConnection> {
+        Op {
+            req: box_command(
+                PATH,
+                "connect",
+                json!({ "ssid": ssid, "password": password, "interface": interface }),
+                budget(),
+            ),
+            parse: value_as::<WifiConnection>,
+        }
+    }
+
     pub(crate) fn delete(ssid: &str) -> Op<()> {
         Op {
             req: box_command(PATH, "delete", json!({ "ssid": ssid }), budget()),
@@ -75,8 +87,11 @@ box_handle! {
         /// Scan for access points on an interface (e.g. `"wlan0"`),
         /// strongest first.
         fn scan(interface: &str) -> Vec<WifiAccessPoint> = ops::scan;
-        /// Join a network (empty password for open networks).
+        /// Join a network on `wlan0` (empty password for open networks).
         fn connect(ssid: &str, password: &str) -> WifiConnection = ops::connect;
+        /// Join a network on a named wireless interface, for a box with
+        /// more than one (e.g. a USB WiFi adapter as `wlan1`).
+        fn connect_on(ssid: &str, password: &str, interface: &str) -> WifiConnection = ops::connect_on;
         /// Delete a saved connection profile by SSID/name.
         fn delete(ssid: &str) -> () = ops::delete;
     }
