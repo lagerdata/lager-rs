@@ -66,6 +66,29 @@ All notable changes to the `lager-net` crate are documented here.
   `--write` writes four bytes of RAM, reads them back and restores them: the
   pattern for register access, memory writes and other GDB packets the typed
   API does not cover.
+- **Typed `Scope` methods for the actions that were only reachable through
+  `Scope::command`:** `capabilities()` (`ScopeCapabilities`), `state()`
+  (`ScopeState`: every control setting in one request), the trigger getters
+  `capture_mode()`, `trigger_source()`, `trigger_slope()` and
+  `trigger_level()`, `set_trigger_holdoff()` / `trigger_holdoff()`,
+  `set_acquisition()` / `acquisition()` (`AcquisitionMode`: normal, average,
+  peak), `set_roll()` / `roll()` (`RollMode`), `set_display()` / `display()`
+  (`DisplaySettings`: persistence, XY, zoom, math trace, FFT pane), `fft()`
+  (`FftOptions`, returns a `Spectrum` of `SpectralPeak`s), and the cursors:
+  `set_cursors()`, `cursors()`, `clear_cursors()` and `measure_cursors()`.
+- **Typed `Router` methods for every remaining router action:** security
+  profiles (`security_profiles()`, `create_security_profile()` with a new
+  `SecurityProfile`, `create_open_security_profile()`,
+  `update_security_profile_password()`, `delete_security_profile()`),
+  `configure_wireless()`, `set_interface_disabled()`, `wait_for_ready()`,
+  `wait_for_wireless_ready()`, DHCP (`enable_dhcp()`, `disable_dhcp()`,
+  `set_dhcp_lease_time()`), bandwidth limits (`add_bandwidth_limit()`,
+  `remove_bandwidth_limits()`), `add_firewall_rule()`, `block_dns()`,
+  `block_port()`, the access list (`access_list()`,
+  `add_access_list_entry()` with a new `AccessListEntry`,
+  `remove_access_list_entry()`, `clear_access_list()`),
+  `reset_to_defaults()` (`RouterBaseline`) and `rest_get()` for read-only
+  RouterOS REST paths. `Router::command` stays for anything else.
 
 ### Changed
 
@@ -95,6 +118,9 @@ All notable changes to the `lager-net` crate are documented here.
 - **`DebugNet::read_memory_no_reset()` docs** said the box resets and halts
   before an OpenOCD read. It never does: only a J-Link net on a Renesas
   DA1469x resets and halts first, so that is the only case the method changes.
+- **`EloadState::mode` docs** listed lower-case modes. The box reports them
+  in upper case, and constant power as `"CW"`: `"CC"`, `"CV"`, `"CR"`,
+  `"CW"`.
 
 ## [0.8.0] - 2026-10-26
 
