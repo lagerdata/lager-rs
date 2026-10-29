@@ -141,7 +141,13 @@ pub use nets::dfu::DfuOptions;
 pub use nets::eload::EloadMode;
 pub use nets::gpio::{Level, WaitForLevelOptions};
 pub use nets::hsm::{GenerateKey, GeneratedKey, HsmAuth, HsmInfo, HsmObject};
-pub use nets::scope::{EdgeTrigger, Measurement, Measurements, TriggerMode, TriggerSettings};
+pub use nets::router::{AccessListEntry, RouterBaseline, SecurityProfile};
+pub use nets::scope::{
+    Acquisition, AcquisitionMode, CursorMeasurement, CursorReadings, CursorSettings, Cursors,
+    DisplaySettings, EdgeTrigger, FftOptions, FftPane, FftWindow, MathTrace, Measurement,
+    Measurements, Persistence, Roll, RollMode, ScopeCapabilities, ScopeChannelState, ScopeState,
+    ScopeTimebase, ScopeTriggerState, SpectralPeak, Spectrum, TriggerMode, TriggerSettings, Zoom,
+};
 pub use nets::spi::{BitOrder, CsActive, CsMode, SpiConfig, SpiOptions, SpiTransfer};
 pub use nets::supply::ProtectionLimits;
 

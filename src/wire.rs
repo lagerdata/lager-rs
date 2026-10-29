@@ -1193,7 +1193,8 @@ pub struct BatteryModel {
 /// Structured e-load state from the `state` action on `POST /net/command`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EloadState {
-    /// Active mode (`"cc"`, `"cv"`, `"cr"`, `"cp"`).
+    /// Active mode as the box reports it, upper case: `"CC"`, `"CV"`,
+    /// `"CR"`, and `"CW"` (not `"CP"`) for constant power.
     #[serde(default)]
     pub mode: Option<String>,
     /// Whether the load input is enabled.

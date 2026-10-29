@@ -3740,3 +3740,570 @@ mod async_parity {
         m.assert_async().await;
     }
 }
+
+#[test]
+fn scope_trigger_holdoff_acquisition_and_roll_send_the_box_params() {
+    let server = MockServer::start();
+    let mocks = [
+        scope_mock(
+            &server,
+            "get_capture_mode",
+            json!({}),
+            Some(json!("normal")),
+        ),
+        scope_mock(&server, "get_trigger_source", json!({}), Some(json!("A"))),
+        scope_mock(
+            &server,
+            "get_trigger_slope",
+            json!({}),
+            Some(json!("rising")),
+        ),
+        scope_mock(&server, "get_trigger_level", json!({}), Some(json!(1.25))),
+        scope_mock(
+            &server,
+            "set_trigger_holdoff",
+            json!({"seconds": 0.002}),
+            None,
+        ),
+        scope_mock(
+            &server,
+            "get_trigger_holdoff",
+            json!({}),
+            Some(json!(0.002)),
+        ),
+        scope_mock(
+            &server,
+            "set_acquire",
+            json!({"mode": "average", "count": 64}),
+            Some(json!({"mode": "average", "average_count": 64})),
+        ),
+        scope_mock(
+            &server,
+            "set_acquire",
+            json!({"mode": "peak"}),
+            Some(json!({"mode": "peak", "average_count": 16})),
+        ),
+        scope_mock(
+            &server,
+            "get_acquire",
+            json!({}),
+            Some(json!({"mode": "normal", "average_count": 16})),
+        ),
+        scope_mock(
+            &server,
+            "set_roll",
+            json!({"mode": "on"}),
+            Some(json!({"roll": "on", "rolling": true})),
+        ),
+        scope_mock(
+            &server,
+            "get_roll",
+            json!({}),
+            Some(json!({"roll": "auto", "rolling": false})),
+        ),
+    ];
+    let lager = client(&server);
+    let ch1 = lager.scope("scope-ch1");
+    assert_eq!(ch1.capture_mode().unwrap(), "normal");
+    assert_eq!(ch1.trigger_source().unwrap(), "A");
+    assert_eq!(ch1.trigger_slope().unwrap(), "rising");
+    assert_eq!(ch1.trigger_level().unwrap(), 1.25);
+    ch1.set_trigger_holdoff(0.002).unwrap();
+    assert_eq!(ch1.trigger_holdoff().unwrap(), 0.002);
+    let avg = ch1
+        .set_acquisition(lager::AcquisitionMode::Average, Some(64))
+        .unwrap();
+    assert_eq!(avg.mode.as_deref(), Some("average"));
+    assert_eq!(avg.average_count, Some(64));
+    ch1.set_acquisition(lager::AcquisitionMode::Peak, None)
+        .unwrap();
+    assert_eq!(ch1.acquisition().unwrap().mode.as_deref(), Some("normal"));
+    let roll = ch1.set_roll(lager::RollMode::On).unwrap();
+    assert_eq!(roll.roll.as_deref(), Some("on"));
+    assert!(roll.rolling);
+    assert!(!ch1.roll().unwrap().rolling);
+    for m in &mocks {
+        m.assert();
+    }
+}
+
+#[test]
+fn scope_capabilities_and_state_parse_the_daemon_shapes() {
+    let server = MockServer::start();
+    scope_mock(
+        &server,
+        "capabilities",
+        json!({}),
+        Some(json!({
+            "family": "ps2000a", "model": "2205A", "serial": "JO123/0001",
+            "analog_channels": 2, "channel_labels": ["A", "B"],
+            "resolution": {"fixed": 8},
+            "voltage_ranges": [{"volts": 0.05}],
+            "max_sample_rate_hz": 500000000.0, "max_memory_samples": 16000,
+            "bandwidth_hz": 25000000.0, "analog_offset": true,
+            "roll_mode": true, "peak_detect": false, "advanced_triggers": []
+        })),
+    );
+    scope_mock(
+        &server,
+        "get_state",
+        json!({}),
+        Some(json!({
+            "version": 7, "acquiring": true, "rolling": false,
+            "capture_mode": "auto",
+            "trigger": {"source": "A", "level": 1.5, "slope": "rising",
+                        "holdoff_s": 0.0, "position_percent": 50.0},
+            "timebase": {"time_per_div": 0.001, "time_offset": 0.0,
+                         "sample_interval_ns": 1000.0, "memory_depth": 10000,
+                         "roll": "auto"},
+            "acquisition": {"mode": "normal", "average_count": 16},
+            "channels": [
+                {"channel": "A", "enabled": true, "volts_per_div": 0.5,
+                 "volts_offset": 0.0, "coupling": "DC", "attenuation": 10.0},
+                {"channel": "B", "enabled": false, "volts_per_div": 1.0,
+                 "volts_offset": 0.0, "coupling": "AC", "attenuation": 1.0}
+            ],
+            "display": {"persistence": "infinite"}
+        })),
+    );
+    let lager = client(&server);
+    let ch1 = lager.scope("scope-ch1");
+    let caps = ch1.capabilities().unwrap();
+    assert_eq!(caps.model.as_deref(), Some("2205A"));
+    assert_eq!(caps.analog_channels, Some(2));
+    assert_eq!(caps.channel_labels, vec!["A", "B"]);
+    assert!(caps.roll_mode);
+    assert!(!caps.peak_detect);
+    assert_eq!(caps.extra["analog_offset"], json!(true));
+
+    let state = ch1.state().unwrap();
+    assert!(state.acquiring);
+    assert_eq!(state.capture_mode.as_deref(), Some("auto"));
+    let trigger = state.trigger.unwrap();
+    assert_eq!(trigger.source.as_deref(), Some("A"));
+    assert_eq!(trigger.position_percent, Some(50.0));
+    assert_eq!(state.timebase.unwrap().memory_depth, Some(10000));
+    assert_eq!(state.channels.len(), 2);
+    assert_eq!(state.channels[0].coupling.as_deref(), Some("DC"));
+    assert!(!state.channels[1].enabled);
+    assert_eq!(state.display["persistence"], "infinite");
+    assert_eq!(state.live_view_problem, None);
+}
+
+#[test]
+fn scope_display_sends_only_the_settings_given() {
+    use lager::{DisplaySettings, FftPane, FftWindow, MathTrace, Persistence, Zoom};
+    let server = MockServer::start();
+    let set_on = scope_mock(
+        &server,
+        "set_display",
+        json!({
+            "persistence": 2.5, "xy": true,
+            "zoom": {"factor": 4.0, "center": 0.001},
+            "math": "a-b",
+            "fft": {"channel": "B", "window": "flattop"}
+        }),
+        Some(json!({"persistence": 2.5, "xy": true})),
+    );
+    let set_off = scope_mock(
+        &server,
+        "set_display",
+        json!({"persistence": "off", "zoom": "off", "math": "off", "fft": "off"}),
+        Some(json!({})),
+    );
+    let set_infinite = scope_mock(
+        &server,
+        "set_display",
+        json!({"persistence": "infinite"}),
+        Some(json!({"persistence": "infinite"})),
+    );
+    let get = scope_mock(&server, "get_display", json!({}), Some(json!({"xy": true})));
+    let lager = client(&server);
+    let ch1 = lager.scope("scope-ch1");
+    let shown = ch1
+        .set_display(&DisplaySettings {
+            persistence: Some(Persistence::Seconds(2.5)),
+            xy: Some(true),
+            zoom: Some(Zoom::Around {
+                factor: 4.0,
+                center: 0.001,
+            }),
+            math: Some(MathTrace::Expr("a-b".into())),
+            fft: Some(FftPane::On {
+                channel: Some("B".into()),
+                window: Some(FftWindow::Flattop),
+            }),
+        })
+        .unwrap();
+    assert_eq!(shown["xy"], true);
+    ch1.set_display(&DisplaySettings {
+        persistence: Some(Persistence::Off),
+        zoom: Some(Zoom::Off),
+        math: Some(MathTrace::Off),
+        fft: Some(FftPane::Off),
+        ..Default::default()
+    })
+    .unwrap();
+    ch1.set_display(&DisplaySettings {
+        persistence: Some(Persistence::Infinite),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(ch1.display().unwrap()["xy"], true);
+    set_on.assert();
+    set_off.assert();
+    set_infinite.assert();
+    get.assert();
+}
+
+#[test]
+fn scope_fft_sends_options_and_parses_the_spectrum() {
+    let server = MockServer::start();
+    let defaults = scope_mock(
+        &server,
+        "fft",
+        json!({}),
+        Some(json!({
+            "channel": "A", "window": "hann", "sample_rate_hz": 1000000.0,
+            "resolution_hz": 100.0, "samples": 10000,
+            // The box sends a zero-amplitude peak's -inf dBV as null.
+            "peaks": [{"frequency_hz": 1000.0, "vrms": 0.7, "dbv": -3.1},
+                      {"frequency_hz": 3000.0, "vrms": 0.0, "dbv": null}]
+        })),
+    );
+    let explicit = scope_mock(
+        &server,
+        "fft",
+        json!({"channel": "B", "window": "blackman", "peaks": 3}),
+        Some(json!({"channel": "B", "window": "blackman", "peaks": []})),
+    );
+    let lager = client(&server);
+    let ch1 = lager.scope("scope-ch1");
+    let spectrum = ch1.fft(&lager::FftOptions::default()).unwrap();
+    assert_eq!(spectrum.samples, Some(10000));
+    assert_eq!(spectrum.peaks.len(), 2);
+    assert_eq!(spectrum.peaks[0].frequency_hz, 1000.0);
+    assert_eq!(spectrum.peaks[0].dbv, Some(-3.1));
+    assert_eq!(spectrum.peaks[1].dbv, None);
+    let other = ch1
+        .fft(&lager::FftOptions {
+            channel: Some("B".into()),
+            window: Some(lager::FftWindow::Blackman),
+            peaks: Some(3),
+        })
+        .unwrap();
+    assert!(other.peaks.is_empty());
+    defaults.assert();
+    explicit.assert();
+}
+
+#[test]
+fn scope_cursors_place_read_measure_and_clear() {
+    let server = MockServer::start();
+    let set = scope_mock(
+        &server,
+        "set_cursor",
+        json!({"time": [0.0, 0.001], "volts": [0.5, 2.5], "channel": "A"}),
+        Some(json!({"time": [0.0, 0.001], "volts": [0.5, 2.5], "channel": "A"})),
+    );
+    let get = scope_mock(
+        &server,
+        "get_cursor",
+        json!({}),
+        Some(json!({"time": null, "volts": [0.5, 2.5], "channel": "A"})),
+    );
+    let measure = scope_mock(
+        &server,
+        "measure_cursor",
+        json!({}),
+        Some(json!({
+            "cursors": {"time": [0.0, 0.001], "volts": null, "channel": "A"},
+            "readings": {"t1": 0.0, "t2": 0.001, "delta_t": 0.001,
+                         "frequency": 1000.0, "window_start": -0.005,
+                         "window_end": 0.005, "trace_v1": 0.1}
+        })),
+    );
+    let clear = scope_mock(&server, "clear_cursor", json!({}), None);
+    let lager = client(&server);
+    let ch1 = lager.scope("scope-ch1");
+    let placed = ch1
+        .set_cursors(&lager::CursorSettings {
+            time: Some((0.0, 0.001)),
+            volts: Some((0.5, 2.5)),
+            channel: Some("A".into()),
+        })
+        .unwrap();
+    assert_eq!(placed.time, Some([0.0, 0.001]));
+    let now = ch1.cursors().unwrap();
+    assert_eq!(now.time, None);
+    assert_eq!(now.volts, Some([0.5, 2.5]));
+    let read = ch1.measure_cursors().unwrap();
+    assert_eq!(read.readings.frequency, Some(1000.0));
+    assert_eq!(read.readings.trace_v1, Some(0.1));
+    assert_eq!(read.readings.trace_v2, None);
+    assert_eq!(read.cursors.volts, None);
+    ch1.clear_cursors().unwrap();
+    set.assert();
+    get.assert();
+    measure.assert();
+    clear.assert();
+}
+
+fn router_mock<'a>(
+    server: &'a MockServer,
+    action: &str,
+    params: serde_json::Value,
+    value: serde_json::Value,
+) -> httpmock::Mock<'a> {
+    server.mock(|when, then| {
+        // No role hint: a router net may be saved as "router" or "mikrotik".
+        when.method(POST).path("/net/command").json_body(json!({
+            "netname": "router1", "action": action, "params": params
+        }));
+        then.status(200).json_body(json!({
+            "success": true, "action": action,
+            "message": format!("router {action} ok"), "value": value
+        }));
+    })
+}
+
+#[test]
+fn router_typed_actions_send_the_box_params() {
+    use lager::{AccessListEntry, RouterBaseline, SecurityProfile};
+    use std::time::Duration;
+    let server = MockServer::start();
+    let mocks = [
+        router_mock(
+            &server,
+            "security_profiles",
+            json!({}),
+            json!([{"name": "default"}]),
+        ),
+        router_mock(&server, "access_list", json!({}), json!([])),
+        router_mock(
+            &server,
+            "wait_for_ready",
+            json!({"timeout": 90.0}),
+            json!({"ready": true}),
+        ),
+        router_mock(
+            &server,
+            "wait_for_wireless_ready",
+            json!({"interface": "wlan1", "timeout": 30.0}),
+            json!({"ready": true}),
+        ),
+        router_mock(
+            &server,
+            "set_interface_disabled",
+            json!({"interface": "ether2", "disabled": true}),
+            json!({"interface": "ether2", "disabled": true}),
+        ),
+        router_mock(
+            &server,
+            "configure_wireless",
+            json!({"interface": "wlan1", "kwargs": {"ssid": "bench", "band": "2ghz-b/g/n"}}),
+            json!({"ssid": "bench"}),
+        ),
+        router_mock(
+            &server,
+            "create_security_profile",
+            json!({"name": "wpa2", "wpa2_pre_shared_key": "benchpass"}),
+            json!({"name": "wpa2"}),
+        ),
+        router_mock(
+            &server,
+            "create_open_security_profile",
+            json!({"name": "guest"}),
+            json!({"name": "guest"}),
+        ),
+        router_mock(
+            &server,
+            "update_security_profile_password",
+            json!({"name": "wpa2", "new_password": "newpass1"}),
+            json!({"updated": true}),
+        ),
+        router_mock(
+            &server,
+            "delete_security_profile",
+            json!({"name": "missing"}),
+            json!({"deleted": false}),
+        ),
+        router_mock(
+            &server,
+            "enable_dhcp",
+            json!({}),
+            json!({"dhcp": "enabled"}),
+        ),
+        router_mock(
+            &server,
+            "disable_dhcp",
+            json!({}),
+            json!({"dhcp": "disabled"}),
+        ),
+        router_mock(
+            &server,
+            "set_dhcp_lease_time",
+            json!({"lease_time": "1h"}),
+            json!({"lease_time": "1h"}),
+        ),
+        router_mock(
+            &server,
+            "add_bandwidth_limit",
+            json!({"target": "192.168.88.0/24", "max_limit": "1M/1M"}),
+            json!({".id": "*1"}),
+        ),
+        router_mock(
+            &server,
+            "add_bandwidth_limit",
+            json!({"target": "192.168.88.20", "max_limit": "256k/2M", "name": "slow"}),
+            json!({".id": "*2"}),
+        ),
+        router_mock(
+            &server,
+            "remove_bandwidth_limits",
+            json!({}),
+            json!({"removed": true}),
+        ),
+        router_mock(
+            &server,
+            "add_firewall_rule",
+            json!({"chain": "forward", "rule_action": "drop",
+                   "protocol": "udp", "dst-port": "53"}),
+            json!({".id": "*A"}),
+        ),
+        router_mock(&server, "block_dns", json!({}), json!({"blocked": "dns"})),
+        router_mock(
+            &server,
+            "block_port",
+            json!({"port": 443, "protocol": "tcp"}),
+            json!({"blocked": "tcp/443"}),
+        ),
+        router_mock(
+            &server,
+            "add_access_list_entry",
+            json!({"mac_address": "AA:BB:CC:DD:EE:FF", "authentication": false}),
+            json!({".id": "*3"}),
+        ),
+        router_mock(
+            &server,
+            "remove_access_list_entry",
+            json!({"mac_address": "AA:BB:CC:DD:EE:FF"}),
+            json!({"removed": "AA:BB:CC:DD:EE:FF"}),
+        ),
+        router_mock(
+            &server,
+            "clear_access_list",
+            json!({}),
+            json!({"cleared": true}),
+        ),
+        router_mock(
+            &server,
+            "reset_to_defaults",
+            json!({"baseline_ssid": "bench", "baseline_pass": "benchpass",
+                   "wireless_interfaces": ["wlan1"]}),
+            json!({"reset": true}),
+        ),
+        router_mock(
+            &server,
+            "reset_to_defaults",
+            json!({}),
+            json!({"reset": true}),
+        ),
+        router_mock(
+            &server,
+            "run",
+            json!({"path": "/ip/address", "params": {"interface": "ether1"}}),
+            json!([{"address": "192.168.88.1/24"}]),
+        ),
+    ];
+    let lager = client(&server);
+    let router = lager.router("router1");
+    assert_eq!(router.security_profiles().unwrap()[0]["name"], "default");
+    assert_eq!(router.access_list().unwrap(), json!([]));
+    router.wait_for_ready(Duration::from_secs(90)).unwrap();
+    router
+        .wait_for_wireless_ready("wlan1", Duration::from_secs(30))
+        .unwrap();
+    router.set_interface_disabled("ether2", true).unwrap();
+    router
+        .configure_wireless("wlan1", json!({"ssid": "bench", "band": "2ghz-b/g/n"}))
+        .unwrap();
+    router
+        .create_security_profile(&SecurityProfile::wpa2("wpa2", "benchpass"))
+        .unwrap();
+    router.create_open_security_profile("guest").unwrap();
+    assert!(router
+        .update_security_profile_password("wpa2", "newpass1")
+        .unwrap());
+    assert!(!router.delete_security_profile("missing").unwrap());
+    router.enable_dhcp().unwrap();
+    router.disable_dhcp().unwrap();
+    router.set_dhcp_lease_time("1h").unwrap();
+    router
+        .add_bandwidth_limit("192.168.88.0/24", "1M/1M", None)
+        .unwrap();
+    router
+        .add_bandwidth_limit("192.168.88.20", "256k/2M", Some("slow"))
+        .unwrap();
+    router.remove_bandwidth_limits().unwrap();
+    router
+        .add_firewall_rule(
+            "forward",
+            "drop",
+            json!({"protocol": "udp", "dst-port": "53"}),
+        )
+        .unwrap();
+    router.block_dns().unwrap();
+    router.block_port(443, "tcp").unwrap();
+    router
+        .add_access_list_entry(&AccessListEntry {
+            mac_address: "AA:BB:CC:DD:EE:FF".into(),
+            authentication: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+    router
+        .remove_access_list_entry("AA:BB:CC:DD:EE:FF")
+        .unwrap();
+    router.clear_access_list().unwrap();
+    router
+        .reset_to_defaults(&RouterBaseline {
+            ssid: Some("bench".into()),
+            password: Some("benchpass".into()),
+            wireless_interfaces: Some(vec!["wlan1".into()]),
+        })
+        .unwrap();
+    router
+        .reset_to_defaults(&RouterBaseline::default())
+        .unwrap();
+    let addresses = router
+        .rest_get("/ip/address", Some(json!({"interface": "ether1"})))
+        .unwrap();
+    assert_eq!(addresses[0]["address"], "192.168.88.1/24");
+    for m in &mocks {
+        m.assert();
+    }
+}
+
+#[test]
+fn router_wait_timeout_is_a_box_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(POST).path("/net/command");
+        then.status(502).json_body(json!({
+            "success": false,
+            "error": "Router did not come back online within 5.0s"
+        }));
+    });
+    match client(&server)
+        .router("router1")
+        .wait_for_ready(std::time::Duration::from_secs(5))
+        .unwrap_err()
+    {
+        Error::Box {
+            status: 502,
+            message,
+        } => assert!(message.contains("did not come back"), "{message}"),
+        other => panic!("expected Box 502, got {other:?}"),
+    }
+}
