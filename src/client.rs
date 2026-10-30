@@ -154,6 +154,12 @@ impl LagerBox {
         &self.base
     }
 
+    /// The per-request timeout this client was built with.
+    #[cfg(feature = "scope-trace")]
+    pub(crate) fn default_timeout(&self) -> Duration {
+        self.default_timeout
+    }
+
     // -- raw access --------------------------------------------------------
 
     /// Open a TCP stream to one of the box's debug ports: a GDB server
@@ -1089,7 +1095,7 @@ impl Drop for BoxLockGuard<'_> {
 }
 
 /// TCP connect with a timeout, trying every address the host resolves to.
-fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<std::net::TcpStream> {
+pub(crate) fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<std::net::TcpStream> {
     use std::net::ToSocketAddrs;
 
     let context = format!("{host}:{port}");

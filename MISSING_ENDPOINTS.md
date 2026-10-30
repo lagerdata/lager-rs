@@ -53,17 +53,12 @@ Closed by crate 0.8 (catch-up through box 0.60.0):
   SPI/I2C achieved clock and warnings (box 0.47.0 / 0.49.0);
   `NetState::enabled` (box 0.53.0); the newer `/status` capability flags.
 
+Closed by crate 0.9: scope trace capture. The box already served it, as
+the WebSocket behind its `/scope` page (`GET /scope/<net>/stream` for a
+ticket, then LSCP binary frames on `/scope/<net>/ws`) → `scope.capture()`
+and `scope.stream()`, feature `scope-trace`.
+
 ## Open
-
-### Scope trace capture
-
-Today: the waveform itself streams from the box's oscilloscope daemon to
-the `/scope` page in the browser. `/net/command` returns settings and
-measurements, never samples.
-
-Needed: an HTTP or WebSocket endpoint that returns one capture's samples
-(time base, per-channel arrays, trigger position), so a test can assert on
-the trace and not only on scalar measurements.
 
 ### Logic analyzer nets
 

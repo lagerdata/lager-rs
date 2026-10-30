@@ -81,11 +81,13 @@
 //! - `uart`: streaming UART sessions over Socket.IO ([`nets::uart::Uart`]).
 //! - `rtt`: bi-directional RTT sessions over Socket.IO
 //!   ([`nets::rtt::RttSession`], box >= 0.35.0).
+//! - `scope-trace`: scope waveform capture over the box's `/scope/<net>/ws`
+//!   WebSocket (`Scope::capture` / `Scope::stream`; see
+//!   [`nets::scope_trace`]).
 //!
 //! # Not yet on the HTTP API
 //!
-//! Scope trace capture and logic-analyzer nets are not on any box HTTP API
-//! yet; [`nets::scope`] covers everything else a scope does. See
+//! Logic-analyzer nets are not on any box HTTP API yet. See
 //! `MISSING_ENDPOINTS.md` in the crate repository.
 
 #![deny(missing_docs)]
@@ -148,6 +150,7 @@ pub use nets::scope::{
     Measurements, Persistence, Roll, RollMode, ScopeCapabilities, ScopeChannelState, ScopeState,
     ScopeTimebase, ScopeTriggerState, SpectralPeak, Spectrum, TriggerMode, TriggerSettings, Zoom,
 };
+pub use nets::scope_trace::{ScopeCapture, TraceChannel, TraceCoupling};
 pub use nets::spi::{BitOrder, CsActive, CsMode, SpiConfig, SpiOptions, SpiTransfer};
 pub use nets::supply::ProtectionLimits;
 
@@ -180,6 +183,9 @@ pub use nets::uart::{Parity, StopBits, Uart, UartConfig};
 
 #[cfg(feature = "rtt")]
 pub use nets::rtt::RttSession;
+
+#[cfg(feature = "scope-trace")]
+pub use nets::scope_trace::ScopeStream;
 
 // Structured result types, re-exported from the wire layer.
 pub use nets::arm::ArmAcceleration;

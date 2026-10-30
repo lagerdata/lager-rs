@@ -89,6 +89,15 @@ All notable changes to the `lager-net` crate are documented here.
   `remove_access_list_entry()`, `clear_access_list()`),
   `reset_to_defaults()` (`RouterBaseline`) and `rest_get()` for read-only
   RouterOS REST paths. `Router::command` stays for anything else.
+- **Scope trace capture (feature `scope-trace`).** `Scope::capture()` returns
+  the scope's latest capture as a `ScopeCapture`: time base, trigger
+  position, per-channel descriptors and raw samples, with `volts('A')`,
+  `counts('A')`, `time_axis()` (seconds from the trigger), `triggered()` and
+  `overflowed('A')`. `Scope::stream()` subscribes to every capture from then
+  on, credit-paced so a slow reader gets the newest capture rather than a
+  backlog. Both use the WebSocket behind the box's `/scope` page, so they
+  work on PicoScope nets and on Rigol MSO5000 nets with an HDMI capture card
+  paired. `ScopeCapture::decode()` reads one LSCP frame and needs no feature.
 
 ### Changed
 
