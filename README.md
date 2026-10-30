@@ -334,8 +334,11 @@ the box refuses the key rather than storing a limit nothing enforces.
 
 ## Not yet on the HTTP API
 
-Logic-analyzer nets are not on the box HTTP API yet. See
-[`MISSING_ENDPOINTS.md`](MISSING_ENDPOINTS.md).
+A few things the box's Python API does have no box HTTP route yet: logic
+analyzer, rotation and actuate nets, e-load enable/disable, battery ESR, BLE
+GATT and WiFi disconnect among them. [`MISSING_ENDPOINTS.md`](MISSING_ENDPOINTS.md)
+lists them, with the box administration routes the crate does not wrap yet
+and what is deliberately left out.
 
 ## Hardware smoke tests
 

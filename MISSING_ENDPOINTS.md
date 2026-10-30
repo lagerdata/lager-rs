@@ -2,94 +2,102 @@
 
 This crate targets the Lager box HTTP API on port 9000 for instrument nets
 (`/net/command`, `/supply/command`, `/battery/command`, `/usb/command`,
-`/ble/command`, `/wifi/command`, `/blufi/command`, `/nets/list`, plus the
-`/uart` Socket.IO namespace), and the box **debug service on port 8765** for
-debug-probe nets.
+`/ble/command`, `/wifi/command`, `/blufi/command`, `/nets/list`, the `/uart`
+and `/rtt` Socket.IO namespaces and the `/scope/<net>/ws` capture stream),
+and the box **debug service on port 8765** for debug-probe nets.
 
-This file is the work list for the test-time surface the crate cannot reach
-yet: what the box does not serve over HTTP, and what it serves that the
-crate has not picked up. No net type is a stub any more; the last one,
-`Scope`, became a real net in crate 0.8.
+This file is the work list for what a Rust test still cannot do that a
+Python one on the box can. It has three parts: what is **open** (the box
+has no HTTP route for it yet), what the box serves that the crate is
+**planned** to pick up, and what is **not planned**, with the reason.
 
-## Closed
+## Open: the box has no HTTP route yet
 
-Closed by box 0.33.0 + crate 0.3: generic USB bus enumeration
-(`GET /usb/devices` → `lager.usb_devices()`), box-side USB-DFU flashing
-(`POST /usb/dfu` → `lager.dfu()`), and the box lock/reservation API
-(`/lock`, `/lock/heartbeat`, `/unlock` → `lager.lock()` and friends).
+Each of these exists in the box's Python API but not on its HTTP API, so it
+needs a box change first. The crate will pick each one up behind a `/status`
+capability flag, so an older box answers `Error::UnsupportedByBox`.
 
-Closed by box 0.35.0 + crate 0.4: per-net safety limits
-(`PUT /nets/<name>/safety-limits` → `lager.set_safety_limits()` and
-friends) and bi-directional RTT (the Socket.IO `/rtt` namespace →
-`debug.rtt_interactive()`, feature `rtt`).
+- **Logic analyzer nets.** `lager logic` still runs over the `:5000`
+  Python-exec path; there is no `logic` role on `/net/command`. Needed:
+  channel setup, trigger, a single capture and protocol decode results.
+- **Rotation and actuate nets.** No `rotation` or `actuate` role on
+  `/net/command`.
+- **E-load enable and disable.** The `eload` role sets the CC/CV/CR/CP
+  setpoints and reads state, but cannot switch the input on or off.
+- **Battery simulator ESR.** `/battery/command` reads the ESR but has no
+  action to set it.
+- **BLE GATT.** `/ble/command` covers `scan`, `info`, `connect` and
+  `disconnect`; reading, writing and subscribing to characteristics are not
+  on it.
+- **WiFi disconnect.** `/wifi/command` covers `status`, `scan`, `connect`
+  and `delete`.
+- **Router client checks.** The router driver can report whether a client
+  is connected and set client isolation, but neither is an action of the
+  `router` role.
+- **Scope single capture without a live view.** A Rigol MSO5000 net with no
+  HDMI capture card paired is refused a stream ticket, so `Scope::capture`
+  cannot fetch one capture from it, although the scope itself could answer.
 
-Closed by crate 0.5 (catch-up through box 0.43.0): USB port power-cycling
-and recovery (`cycle`/`recover` on `/usb/command`, box 0.39.0 →
-`usb.cycle()` / `recover()`), live net state (`GET /nets/state`, box
-0.34.0 → `lager.nets_state()`), and per-connection debug scripts
-(`jlink_script` / `openocd_config` on `/debug/connect` →
-`ConnectOptions`).
+## Planned: the box serves it, the crate does not wrap it yet
 
-Closed by crate 0.8 (catch-up through box 0.60.0):
+Box administration and provisioning, to come behind an `admin` feature:
 
-- Oscilloscope nets: the `scope` / `scope-channel` roles on `/net/command`
-  (box 0.55.0) → `lager.scope()`, with channel setup, timebase, trigger,
-  acquisition control and measurements.
-- YubiHSM 2 nets: the `hsm` role (box 0.59.0) → `lager.hsm()`.
-- Custom-driver nets: any role a driver installed on the box declares (box
-  0.59.0) → `lager.custom()`.
-- Halt-in-place: `POST /debug/halt` (box 0.60.0), OpenOCD's bare `halt`
-  with no nRESET pulse → `debug.halt()`, gated on the debug service's
-  `"halt"` feature. J-Link has no halt-in-place primitive; the box answers
-  400 pointing at a halt-first `.JLinkScript`.
-- Debug service: partial erase (`erase_start` / `erase_size`, box 0.50.0)
-  → `erase_range()`; flash and erase verdicts (box 0.51.0) →
-  `FlashReport` / `EraseReport` and `Error::FlashFailed`; probe-busy (503)
-  and safety refusals (403) → `Error::ProbeBusy` / `Error::SafetyRefused`;
-  probed status (box 0.44.0), port overrides on connect, memory reads
-  without a reset, and the RTT chunk size.
-- Webcam `snapshot` (box 0.47.0) and the stream starter fields; arm
-  `get_acceleration` (box 0.60.0); USB `cycle` outcomes (box 0.49.0);
-  SPI/I2C achieved clock and warnings (box 0.47.0 / 0.49.0);
-  `NetState::enabled` (box 0.53.0); the newer `/status` capability flags.
+- net CRUD (`PUT/DELETE /nets/<name>`, `DELETE /nets`), net and box metadata
+  (`/nets/<name>/metadata`, `/box-metadata`)
+- custom drivers (`/drivers`, `/drivers/<type>/deps`), `/binaries` and
+  `/download-file`
+- `/bench`, custom-device definitions (`/custom-devices`),
+  `/instruments/list`, `/diagnose/*` and `/hello`
 
-Closed by crate 0.9: scope trace capture. The box already served it, as
-the WebSocket behind its `/scope` page (`GET /scope/<net>/stream` for a
-ticket, then LSCP binary frames on `/scope/<net>/ws`) → `scope.capture()`
-and `scope.stream()`, feature `scope-trace`.
+Until then, `LagerBox::bearer_token()` returns the token to attach to a raw
+HTTP call against any of these.
 
-## Open
+## Not planned
 
-### Logic analyzer nets
-
-Today: `lager logic` still runs over the `:5000` Python-exec path; there is
-no `logic` role on `/net/command`.
-
-Needed: a `logic` role covering at least channel setup, trigger, a single
-capture and protocol decode results.
-
-## Not planned (out of crate scope for now)
-
-These are provisioning, configuration or UI flows rather than test-time
-net access, and are left out of the crate rather than stubbed:
-
-- `Rotation` / `Actuate` nets
-- net CRUD (`PUT/DELETE :9000/nets/...`), net and box metadata sync,
-  `/drivers` (installing custom drivers), `/binaries`, `/bench`,
-  custom-device definitions, `/instruments/list` and `/diagnose/*`. The box
-  already serves these; they can be added to the crate if test suites need
-  to manage a box programmatically. (The safety-limits corner of net
-  config, `PUT /nets/<name>/safety-limits`, is served since crate 0.4.)
-  FTDI per-net channel selection (`params.interface`, box 0.43.0) falls in
-  the same bucket: it is saved-net configuration written at net-add time,
-  and the crate's `nets()` read-back already carries it inside `params`.
-- Instrument configuration that a test does not change between runs:
-  battery model files (`list_models` / `export_model` / `create_model`) and
-  supply `set_mode`. `Router::command` and `Scope::command` reach actions of
-  their roles the typed API leaves out.
-- The `/supply` and `/battery` Socket.IO monitors, the webcam per-stream
-  `/api/*` servers, UART session management, and `GET /nets/state?stream=1`
-  (NDJSON). `nets_state()` covers the one-shot read.
-- `lager python` remote-script execution and job control (submit / detach /
-  reattach / kill) — the crate exists to replace those box-side Python
+- **GDB, OpenOCD and J-Link sessions beyond flash, erase, reset, halt and
+  memory reads.** `LagerBox::debug_tunnel()` hands back a TCP stream to any
+  debug port, through the gateway on a gated box, which any GDB
+  remote-protocol client can drive. The `debug_tunnel` example reads
+  registers and writes memory that way. A typed GDB client is out of scope.
+- **The `/supply` and `/battery` Socket.IO monitors**, and
+  `GET /nets/state?stream=1` (NDJSON). `Supply::state()`,
+  `Battery::state()` and `nets_state()` cover the reads; poll them.
+- **The webcam per-stream `/api/*` servers.** `Webcam::url()` gives the
+  stream; the per-stream servers are for the box's own viewer page.
+- **`lager python` remote-script execution and job control** (submit,
+  detach, reattach, kill). The crate exists to replace those box-side Python
   scripts with Rust running on the host, so driving them is a non-goal.
+- **Box-internal services:** the hardware service on `:8080` (`/invoke`,
+  `/cache/*`) and the `:5000` job runner. They are implementation details
+  behind the public API, not an API of their own.
+
+## History
+
+- Box 0.33.0 + crate 0.3: USB bus enumeration (`GET /usb/devices` →
+  `usb_devices()`), box-side DFU (`POST /usb/dfu` → `dfu()`), and the box
+  lock (`/lock`, `/lock/heartbeat`, `/unlock` → `lock()` and friends).
+- Box 0.35.0 + crate 0.4: per-net safety limits
+  (`PUT /nets/<name>/safety-limits` → `set_safety_limits()`) and
+  bi-directional RTT (the `/rtt` namespace → `rtt_interactive()`, feature
+  `rtt`).
+- Crate 0.5, through box 0.43.0: USB `cycle` / `recover`, `nets_state()`,
+  and per-connection debug scripts on `/debug/connect` (`ConnectOptions`).
+- Crate 0.8, through box 0.60.0: scope, YubiHSM and custom-driver nets;
+  `debug.halt()`; partial erase; flash and erase verdicts; probe-busy and
+  safety refusals; probed status; webcam `snapshot`; arm acceleration; USB
+  cycle outcomes; SPI/I2C achieved clock; `NetState::enabled`.
+- Crate 0.9, everything the box already served:
+  - Power: supply OCP/OVP with a setpoint and `set_mode()`, battery model
+    files, e-load setpoints and energy totals as typed fields, solar `"n/a"`
+    as `None`.
+  - Comms: per-session UART serial settings, UART session listing and
+    release, exact-name BLE scans and connect timeouts, WiFi on a chosen
+    interface, BluFi name filtering and scan timeouts, the DFU timeout.
+  - Debug: flash and erase options (`.JLinkScript`, verbose, evidence,
+    speed, transport), the RTT timeout, reset and halt output, and the debug
+    service's own health and status.
+  - Typed methods for every scope and router action that was reachable only
+    through `command()`.
+  - Scope trace capture (`scope.capture()` / `scope.stream()`, feature
+    `scope-trace`), over the WebSocket behind the box's `/scope` page.
+  - Async UART, async interactive RTT and the async RTT log stream.
