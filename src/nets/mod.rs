@@ -23,6 +23,7 @@ pub mod router;
 #[cfg(feature = "rtt")]
 pub mod rtt;
 pub mod scope;
+pub mod scope_trace;
 #[cfg(any(feature = "uart", feature = "rtt"))]
 pub(crate) mod sio;
 pub mod solar;

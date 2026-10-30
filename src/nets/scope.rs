@@ -12,8 +12,9 @@
 //! An older box answers HTTP 501 for scope nets, which surfaces as
 //! [`crate::Error::UnsupportedByBox`].
 //!
-//! Trace capture (the waveform stream behind the box's `/scope` page) is not
-//! on the HTTP API; see `MISSING_ENDPOINTS.md` in this crate's repository.
+//! Waveform samples (the stream behind the box's `/scope` page) come from
+//! `Scope::capture` and `Scope::stream`, behind the `scope-trace` feature;
+//! see [`crate::nets::scope_trace`].
 //!
 //! ```no_run
 //! # #[cfg(feature = "blocking")]

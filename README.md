@@ -146,6 +146,7 @@ readback (0.60.0).
 | `async` | no | `AsyncLagerBox` on [`reqwest`]/tokio; same methods, `.await`ed |
 | `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace |
 | `rtt` | no | bi-directional `RttSession` over the box's Socket.IO `/rtt` namespace (box >= 0.35.0) |
+| `scope-trace` | no | scope waveform samples: `Scope::capture()` / `Scope::stream()` over the box's `/scope/<net>/ws` WebSocket |
 
 Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.
@@ -327,9 +328,7 @@ the box refuses the key rather than storing a limit nothing enforces.
 
 ## Not yet on the HTTP API
 
-Scope trace capture (the waveform stream behind the box's `/scope` page) and
-logic-analyzer nets are not on the box HTTP API yet. `Scope` covers channel
-setup, timebase, trigger, acquisition control and measurements. See
+Logic-analyzer nets are not on the box HTTP API yet. See
 [`MISSING_ENDPOINTS.md`](MISSING_ENDPOINTS.md).
 
 ## Hardware smoke tests

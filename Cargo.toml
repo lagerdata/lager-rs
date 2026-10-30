@@ -27,6 +27,9 @@ uart = ["blocking", "dep:rust_socketio"]
 # Interactive (bi-directional) RTT over the box's Socket.IO /rtt namespace.
 # Requires box software >= 0.35.0.
 rtt = ["blocking", "dep:rust_socketio"]
+# Scope trace capture: waveform samples over the box's /scope/<net>/ws
+# WebSocket (`Scope::capture` / `Scope::stream`).
+scope-trace = ["blocking", "dep:tungstenite"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -35,10 +38,15 @@ ureq = { version = "2", features = ["json"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["json"], optional = true }
 tokio = { version = "1", features = ["time", "net", "io-util"], optional = true }
 rust_socketio = { version = "0.6", optional = true }
+# The version rust_socketio already pulls in, so `--all-features` adds no
+# second copy. Plain ws:// only; the box API is http.
+tungstenite = { version = "0.21", default-features = false, features = ["handshake"], optional = true }
 
 [dev-dependencies]
 httpmock = "0.7"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# The fake box in tests/scope_trace.rs answers the WebSocket upgrade.
+tungstenite = { version = "0.21", default-features = false, features = ["handshake"] }
 
 # The runnable example uses the blocking client; keep `cargo test
 # --no-default-features --features async` building.
