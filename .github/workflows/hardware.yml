@@ -174,7 +174,7 @@ jobs:
           exit 1
 
       - name: Power on bench instruments
-        uses: lagerdata/lager/.github/actions/bench-power-on@42a0e60f2cc17c4a3602b9541ff2467631c598f8 # main 2026-10-16
+        uses: lagerdata/lager/.github/actions/bench-power-on@f7b04370058129e25cc3bf95343d2f0abde1fa02 # main 2026-10-16
         with:
           box: ${{ env.LAGER_BOX_HOST }}
           rigol-power-net: ${{ env.RIGOL_POWER_NET }}
