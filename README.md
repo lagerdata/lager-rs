@@ -144,8 +144,8 @@ readback (0.60.0).
 | --- | --- | --- |
 | `blocking` | yes | `LagerBox` on [`ureq`] — tiny dependency tree, no tokio |
 | `async` | no | `AsyncLagerBox` on [`reqwest`]/tokio; same methods, `.await`ed |
-| `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace |
-| `rtt` | no | bi-directional `RttSession` over the box's Socket.IO `/rtt` namespace (box >= 0.35.0) |
+| `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace; `AsyncUart` when `async` is on too |
+| `rtt` | no | bi-directional `RttSession` over the box's Socket.IO `/rtt` namespace (box >= 0.35.0); `AsyncRttSession` when `async` is on too |
 | `scope-trace` | no | scope waveform samples: `Scope::capture()` / `Scope::stream()` over the box's `/scope/<net>/ws` WebSocket |
 
 Both clients execute the exact same request builders and response parsers
@@ -154,6 +154,12 @@ Both clients execute the exact same request builders and response parsers
 ```toml
 lager = { package = "lager-net", version = "0.8", features = ["async"] }
 ```
+
+The streams work on both clients too: `AsyncDebugNet::rtt()` returns a
+`tokio::io::AsyncRead`, and with `uart` / `rtt` enabled alongside `async`,
+`AsyncLagerBox::uart()` and `AsyncDebugNet::rtt_interactive()` open the
+async twins of the blocking sessions. Those two features also enable the
+blocking client, whose Socket.IO transport the async sessions share.
 
 ## Parallel tests and instrument safety
 

@@ -78,9 +78,12 @@
 //!   in the dependency tree.
 //! - `async`: the [`AsyncLagerBox`] client on `reqwest`/tokio. Both clients
 //!   share one wire layer ([`wire`]) so they cannot drift.
-//! - `uart`: streaming UART sessions over Socket.IO ([`nets::uart::Uart`]).
+//! - `uart`: streaming UART sessions over Socket.IO ([`nets::uart::Uart`];
+//!   with `async` too, `nets::uart::AsyncUart`).
 //! - `rtt`: bi-directional RTT sessions over Socket.IO
-//!   ([`nets::rtt::RttSession`], box >= 0.35.0).
+//!   ([`nets::rtt::RttSession`], box >= 0.35.0; with `async` too,
+//!   `nets::rtt::AsyncRttSession`). The one-way RTT log stream needs no
+//!   feature on either client.
 //! - `scope-trace`: scope waveform capture over the box's `/scope/<net>/ws`
 //!   WebSocket (`Scope::capture` / `Scope::stream`; see
 //!   [`nets::scope_trace`]).
@@ -93,7 +96,7 @@
 #![deny(missing_docs)]
 
 mod auth;
-#[cfg(feature = "blocking")]
+#[cfg(any(feature = "blocking", feature = "async"))]
 mod chunked;
 mod error;
 pub mod nets;
@@ -183,6 +186,15 @@ pub use nets::uart::{Parity, StopBits, Uart, UartConfig};
 
 #[cfg(feature = "rtt")]
 pub use nets::rtt::RttSession;
+
+#[cfg(feature = "async")]
+pub use nets::debug::AsyncRttStream;
+
+#[cfg(all(feature = "uart", feature = "async"))]
+pub use nets::uart::AsyncUart;
+
+#[cfg(all(feature = "rtt", feature = "async"))]
+pub use nets::rtt::AsyncRttSession;
 
 #[cfg(feature = "scope-trace")]
 pub use nets::scope_trace::ScopeStream;

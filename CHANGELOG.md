@@ -98,6 +98,13 @@ All notable changes to the `lager-net` crate are documented here.
   backlog. Both use the WebSocket behind the box's `/scope` page, so they
   work on PicoScope nets and on Rigol MSO5000 nets with an HDMI capture card
   paired. `ScopeCapture::decode()` reads one LSCP frame and needs no feature.
+- **Async UART and RTT.** `AsyncLagerBox::uart()` / `uart_with()` open an
+  `AsyncUart` (features `uart` + `async`), and
+  `AsyncDebugNet::rtt_interactive()` / `rtt_interactive_with()` open an
+  `AsyncRttSession` (features `rtt` + `async`): the blocking sessions'
+  methods, with `read`, `wait_for`, `write` and `stop` awaited.
+  `AsyncDebugNet::rtt()` / `rtt_with()` return an `AsyncRttStream`, the
+  one-way RTT log stream as a `tokio::io::AsyncRead`, with no extra feature.
 
 ### Changed
 

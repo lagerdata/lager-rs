@@ -36,7 +36,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["json"], optional = true }
-tokio = { version = "1", features = ["time", "net", "io-util"], optional = true }
+tokio = { version = "1", features = ["time", "net", "io-util", "rt", "sync"], optional = true }
 rust_socketio = { version = "0.6", optional = true }
 # The version rust_socketio already pulls in, so `--all-features` adds no
 # second copy. Plain ws:// only; the box API is http.
