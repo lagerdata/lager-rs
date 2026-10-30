@@ -25,6 +25,25 @@ pub(crate) fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Run a blocking Socket.IO call (connect, emit) off the async runtime's
+/// worker threads.
+#[cfg(feature = "async")]
+pub(crate) async fn blocking<T: Send + 'static>(
+    call: impl FnOnce() -> crate::error::Result<T> + Send + 'static,
+) -> crate::error::Result<T> {
+    tokio::task::spawn_blocking(call)
+        .await
+        .map_err(|e| crate::error::Error::Stream(format!("session task failed: {e}")))?
+}
+
+/// If `needle` is in `buf`, remove and return everything up to and including
+/// it, leaving the rest buffered.
+pub(crate) fn take_through(buf: &mut Vec<u8>, needle: &[u8]) -> Option<Vec<u8>> {
+    let pos = buf.windows(needle.len()).position(|w| w == needle)?;
+    let rest = buf.split_off(pos + needle.len());
+    Some(std::mem::replace(buf, rest))
+}
+
 /// Pull the first JSON object out of a Socket.IO payload.
 pub(crate) fn payload_json(payload: Payload) -> Option<Value> {
     match payload {

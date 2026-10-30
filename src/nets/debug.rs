@@ -447,9 +447,7 @@ pub(crate) mod ops {
         )
     }
 
-    /// Build the RTT body. RTT streaming is blocking-only (the async client
-    /// exposes no `rtt()`), so this is unused in async-only builds.
-    #[cfg(feature = "blocking")]
+    /// Build the one-way RTT stream's body (both clients).
     pub(crate) fn rtt_body(net: &Value, opts: &RttOptions) -> Value {
         let mut extra = json!({ "channel": opts.channel, "timeout": opts.timeout });
         if let Some(a) = opts.search_addr {
@@ -832,6 +830,31 @@ impl std::io::Read for RttStream {
     }
 }
 
+/// A live RTT byte stream (async). Implements [`tokio::io::AsyncRead`], so
+/// it can be wrapped in a [`tokio::io::BufReader`] and read line by line.
+#[cfg(feature = "async")]
+pub struct AsyncRttStream {
+    body: crate::chunked::AsyncBody<tokio::net::TcpStream>,
+}
+
+#[cfg(feature = "async")]
+impl AsyncRttStream {
+    pub(crate) fn new(body: crate::chunked::AsyncBody<tokio::net::TcpStream>) -> Self {
+        AsyncRttStream { body }
+    }
+}
+
+#[cfg(feature = "async")]
+impl tokio::io::AsyncRead for AsyncRttStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.get_mut().body).poll_read(cx, buf)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Async handle
 // ---------------------------------------------------------------------------
@@ -1073,6 +1096,62 @@ impl AsyncDebugNet<'_> {
         let (path, body, timeout) = ops::status(&net, probe);
         let resp = self.call(&path, body, timeout).await?;
         serde_json::from_value(resp).map_err(Into::into)
+    }
+
+    /// Open an RTT log stream on channel 0; the async twin of
+    /// [`DebugNet::rtt`]. Yields the target's RTT output as raw bytes until
+    /// the connection closes or the stream is dropped:
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "async")]
+    /// # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+    /// use tokio::io::AsyncBufReadExt;
+    ///
+    /// let lager = lager::AsyncLagerBox::from_env()?;
+    /// let rtt = lager.debug("debug1").rtt().await?;
+    /// let mut lines = tokio::io::BufReader::new(rtt).lines();
+    /// while let Some(line) = lines.next_line().await? {
+    ///     println!("{line}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// # fn main() {}
+    /// ```
+    pub async fn rtt(&self) -> Result<AsyncRttStream> {
+        self.rtt_with(&RttOptions::default()).await
+    }
+
+    /// Open an RTT log stream with explicit options.
+    pub async fn rtt_with(&self, opts: &RttOptions) -> Result<AsyncRttStream> {
+        let net = self.net_record().await?;
+        let body = ops::rtt_body(&net, opts);
+        let req = wire::debug_request("/debug/rtt", body, Timeout::Unbounded);
+        self.client.stream_debug(&req).await
+    }
+
+    /// Open a bi-directional RTT session on channel 0 (feature `rtt`, box
+    /// software >= 0.35.0). See [`DebugNet::rtt_interactive`] for the two
+    /// prerequisites: a running gdbserver, and a firmware RTT down buffer
+    /// for writes.
+    #[cfg(feature = "rtt")]
+    pub async fn rtt_interactive(&self) -> Result<crate::nets::rtt::AsyncRttSession> {
+        self.rtt_interactive_with(&RttOptions::default()).await
+    }
+
+    /// Open a bi-directional RTT session with explicit options (feature
+    /// `rtt`). `opts.channel` selects the RTT channel in both directions.
+    #[cfg(feature = "rtt")]
+    pub async fn rtt_interactive_with(
+        &self,
+        opts: &RttOptions,
+    ) -> Result<crate::nets::rtt::AsyncRttSession> {
+        crate::nets::rtt::AsyncRttSession::open(
+            self.client.base_url().to_string(),
+            self.name.clone(),
+            *opts,
+            self.client.current_token().await,
+        )
+        .await
     }
 }
 

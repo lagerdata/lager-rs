@@ -49,6 +49,14 @@ pub(crate) struct Head {
     /// `X-Gateway-Auth-Url`, when present.
     pub(crate) discovery: Option<String>,
     pub(crate) content_length: usize,
+    /// Whether a `Content-Length` header was present at all. Read by the
+    /// async RTT stream only.
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    pub(crate) has_content_length: bool,
+    /// `Transfer-Encoding: chunked`, under any HTTP version. Read by the
+    /// async RTT stream only.
+    #[cfg_attr(not(feature = "async"), allow(dead_code))]
+    pub(crate) chunked: bool,
 }
 
 /// Parse a complete response head (everything up to and including the
@@ -63,6 +71,8 @@ pub(crate) fn parse_head(raw: &[u8]) -> Option<Head> {
     let status = status_line.next()?.parse().ok()?;
     let mut discovery = None;
     let mut content_length = 0;
+    let mut has_content_length = false;
+    let mut chunked = false;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
@@ -75,12 +85,20 @@ pub(crate) fn parse_head(raw: &[u8]) -> Option<Head> {
             discovery = Some(value.to_string());
         } else if name.trim().eq_ignore_ascii_case("content-length") {
             content_length = value.parse().unwrap_or(0);
+            has_content_length = true;
+        } else if name.trim().eq_ignore_ascii_case("transfer-encoding") {
+            chunked = value
+                .rsplit(',')
+                .next()
+                .is_some_and(|last| last.trim().eq_ignore_ascii_case("chunked"));
         }
     }
     Some(Head {
         status,
         discovery,
         content_length,
+        has_content_length,
+        chunked,
     })
 }
 
@@ -214,11 +232,23 @@ mod tests {
     }
 
     #[test]
+    fn head_reports_chunked_and_length_presence() {
+        let head = parse_head(b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap();
+        assert!(head.chunked);
+        assert!(!head.has_content_length);
+        let head = parse_head(b"HTTP/1.1 400 Bad\r\nContent-Length: 0\r\n\r\n").unwrap();
+        assert!(!head.chunked);
+        assert!(head.has_content_length);
+    }
+
+    #[test]
     fn classification() {
         let head = |status, discovery: Option<&str>| Head {
             status,
             discovery: discovery.map(str::to_string),
             content_length: 0,
+            has_content_length: false,
+            chunked: false,
         };
         assert!(matches!(
             classify(&head(403, Some("https://a")), String::new()),

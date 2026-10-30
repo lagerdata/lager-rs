@@ -380,7 +380,7 @@ impl AsyncLagerBox {
 
     /// Token to attach right now: builder/env token, cached session token,
     /// or a store lookup when the box is already known to be gated.
-    async fn current_token(&self) -> Option<String> {
+    pub(crate) async fn current_token(&self) -> Option<String> {
         if let Some(token) = self.auth.cached_token() {
             return Some(token);
         }
@@ -442,6 +442,134 @@ impl AsyncLagerBox {
             Err(_) => Value::Null,
         };
         Ok((status, gateway, body))
+    }
+
+    /// Open the debug service's RTT stream (`POST /debug/rtt`), with the
+    /// same single refresh-and-retry after a gateway 401 as every request.
+    pub(crate) async fn stream_debug(
+        &self,
+        req: &HttpRequest,
+    ) -> Result<crate::nets::debug::AsyncRttStream> {
+        let token = self.current_token().await;
+        match self.stream_debug_once(req, token.as_deref()).await {
+            Err(Error::AuthRequired {
+                box_host,
+                auth_url,
+                message,
+            }) if !self.auth.has_static_token() => {
+                match self
+                    .auth
+                    .resolve_token_async(&auth_url, token.as_deref())
+                    .await
+                {
+                    Some(fresh) => self.stream_debug_once(req, Some(&fresh)).await,
+                    None => Err(Error::AuthRequired {
+                        box_host,
+                        auth_url,
+                        message,
+                    }),
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// One `POST /debug/rtt` on a socket of its own. reqwest cannot read
+    /// this response: the service sends `Transfer-Encoding: chunked` under
+    /// an HTTP/1.0 status line, which hyper rejects (see `crate::chunked`).
+    async fn stream_debug_once(
+        &self,
+        req: &HttpRequest,
+        token: Option<&str>,
+    ) -> Result<crate::nets::debug::AsyncRttStream> {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+
+        use crate::chunked::AsyncBody;
+        use crate::tunnel as tun;
+
+        let Some(authority) = self.debug_base.strip_prefix("http://") else {
+            return Err(Error::Config(format!(
+                "the async RTT stream needs a plain http:// debug-service address, not '{}'",
+                self.debug_base
+            )));
+        };
+        let (host, port) = tun::host_port(&self.debug_base)?;
+        let context = format!("RTT stream via {host}:{port}");
+        let stream = connect_tcp(&host, port, self.default_timeout).await?;
+        let _ = stream.set_nodelay(true);
+
+        let body = req.body.as_ref().map(Value::to_string).unwrap_or_default();
+        let mut head = format!(
+            "POST {} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n",
+            req.path,
+            body.len()
+        );
+        if let Some(token) = token {
+            head.push_str(&format!("Authorization: Bearer {token}\r\n"));
+        }
+        head.push_str("\r\n");
+
+        let mut reader = tokio::io::BufReader::new(stream);
+        let exchange = async {
+            reader.get_mut().write_all(head.as_bytes()).await?;
+            reader.get_mut().write_all(body.as_bytes()).await?;
+            let mut raw = Vec::with_capacity(256);
+            while !raw.ends_with(b"\r\n\r\n") {
+                if raw.len() >= tun::MAX_HEAD_BYTES
+                    || reader.read_until(b'\n', &mut raw).await? == 0
+                {
+                    return Ok(None);
+                }
+            }
+            Ok::<_, std::io::Error>(Some(raw))
+        };
+        let limit = match req.timeout {
+            Timeout::Default => Some(self.default_timeout),
+            Timeout::After(d) => Some(d),
+            Timeout::Unbounded => None,
+        };
+        let raw = match limit {
+            Some(limit) => tokio::time::timeout(limit, exchange)
+                .await
+                .map_err(|_| Error::Timeout(format!("{context}: no answer")))?,
+            None => exchange.await,
+        }
+        .map_err(|e| tun::io_error(&context, e))?
+        .ok_or_else(|| Error::Connection(format!("{context}: closed before answering")))?;
+        let head = tun::parse_head(&raw)
+            .ok_or_else(|| Error::Decode(format!("{context}: not an HTTP response")))?;
+        let length = head
+            .has_content_length
+            .then_some(head.content_length as u64);
+
+        if head.status == 200 {
+            let body = AsyncBody::new(reader, head.chunked, length);
+            return Ok(crate::nets::debug::AsyncRttStream::new(body));
+        }
+        if auth::is_denial(head.status) {
+            if let Some(auth_url) = &head.discovery {
+                self.auth.learn_auth_server(auth_url);
+                return Err(auth::denial_error(
+                    head.status,
+                    self.auth.box_host(),
+                    auth_url,
+                    token.is_some(),
+                ));
+            }
+        }
+        let mut refusal = Vec::new();
+        let mut body =
+            AsyncBody::new(reader, head.chunked, length).take(tun::MAX_BODY_BYTES as u64);
+        let _ = tokio::time::timeout(self.default_timeout, body.read_to_end(&mut refusal)).await;
+        let refusal: Value = serde_json::from_slice(&refusal).unwrap_or(Value::Null);
+        Err(match wire::parse_debug(head.status, refusal) {
+            Err(e) => e,
+            Ok(_) => Error::Box {
+                status: head.status,
+                message: "RTT stream refused".to_string(),
+            },
+        })
     }
 
     /// Execute one typed operation against a command endpoint.
@@ -860,6 +988,35 @@ impl AsyncLagerBox {
     /// Handle for box-side DFU via dfu-util (box-level, not a saved net).
     pub fn dfu(&self) -> AsyncDfu<'_> {
         AsyncDfu { client: self }
+    }
+
+    /// Open a streaming UART session on a UART net (feature `uart`); the
+    /// async twin of [`crate::LagerBox::uart`]. Only one session per net or
+    /// serial device (box-enforced): a second opener gets
+    /// [`Error::UartInUse`] naming the holder, which
+    /// [`AsyncLagerBox::release_uart_session`] can free.
+    #[cfg(feature = "uart")]
+    pub async fn uart(&self, name: impl Into<String>) -> Result<crate::nets::uart::AsyncUart> {
+        self.uart_with(name, &crate::nets::uart::UartConfig::default())
+            .await
+    }
+
+    /// Like [`AsyncLagerBox::uart`], with serial settings for this session
+    /// only. Fields left `None` keep the net's saved settings, and the saved
+    /// net is never changed.
+    #[cfg(feature = "uart")]
+    pub async fn uart_with(
+        &self,
+        name: impl Into<String>,
+        config: &crate::nets::uart::UartConfig,
+    ) -> Result<crate::nets::uart::AsyncUart> {
+        crate::nets::uart::AsyncUart::open(
+            self.base.clone(),
+            name.into(),
+            *config,
+            self.current_token().await,
+        )
+        .await
     }
 
     /// Handle for a debug-probe net (flash/erase/reset/read_memory).
