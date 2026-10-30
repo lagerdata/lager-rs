@@ -4,6 +4,14 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-30
+
+Wraps what box software 0.60.0 already serves and the crate did not reach: scope
+waveform samples (feature `scope-trace`), async UART and RTT, typed scope and router
+methods, and the remaining options on the power, comm and debug calls. Several return
+types change; see the behavior-change entries under **Changed**. New calls name the box
+version they need, and fail with `Error::UnsupportedByBox` on an older box.
+
 ### Added
 
 - **`Supply::set_voltage_with()` / `set_current_with()`** set a setpoint and
