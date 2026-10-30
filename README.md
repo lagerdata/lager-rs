@@ -23,7 +23,7 @@ box's debug service on port 8765.
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.8" }
+lager = { package = "lager-net", version = "0.9" }
 ```
 
 ```rust
@@ -125,9 +125,11 @@ newer surfaces need a newer box image and fail with
 | `DebugNet::rtt_interactive()` *(feature `rtt`)* | >= 0.35.0 |
 | `UsbPort::cycle()` / `recover()` | >= 0.39.0 |
 | `ConnectOptions::halt` honored on the OpenOCD backend | >= 0.43.0 |
+| `uart_sessions()` / `release_uart_session()` | >= 0.46.0 |
 | `Webcam::snapshot()` | >= 0.47.0 |
 | `DebugNet::erase_range()` | >= 0.50.0 (checked against the debug service's `/health` features before anything is erased) |
 | `scope()` | >= 0.55.0 |
+| `Scope::capture()` / `Scope::stream()` *(feature `scope-trace`)* | >= 0.55.0 on a PicoScope; >= 0.57.0 on a Rigol MSO5000 with an HDMI capture card paired |
 | `hsm()` / `custom()` | >= 0.59.0 |
 | `Arm::get_acceleration()` / `set_acceleration_keep_retract()` | >= 0.60.0 |
 | `DebugNet::halt()` | >= 0.60.0 (OpenOCD nets; checked against the debug service's `/health` features) |
@@ -135,8 +137,8 @@ newer surfaces need a newer box image and fail with
 Fields an older box does not send come back as `None` rather than failing:
 `DebugStatus` / `DebugInfo` `gdbserver_running` and `target_attached`
 (0.44.0), SPI/I2C `achieved_frequency_hz` (0.47.0), `UsbCycleReport::outcome`
-(0.49.0), `NetState::enabled` (0.53.0), and the `Arm::set_acceleration()`
-readback (0.60.0).
+(0.49.0), `Error::UartInUse::held_by` (0.49.0), `NetState::enabled` (0.53.0),
+and the `Arm::set_acceleration()` readback (0.60.0).
 
 ## Features
 
@@ -152,7 +154,7 @@ Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.8", features = ["async"] }
+lager = { package = "lager-net", version = "0.9", features = ["async"] }
 ```
 
 The streams work on both clients too: `AsyncDebugNet::rtt()` returns a

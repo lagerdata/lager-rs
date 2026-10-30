@@ -18,7 +18,7 @@
 //!
 //! ```toml
 //! [dev-dependencies]
-//! lager = { package = "lager-net", version = "0.8" }
+//! lager = { package = "lager-net", version = "0.9" }
 //! ```
 //!
 //! ```no_run
