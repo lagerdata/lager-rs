@@ -586,10 +586,10 @@ impl AsyncLagerBox {
     /// Execute one admin operation (feature `admin`).
     #[cfg(feature = "admin")]
     pub(crate) async fn run_admin<T>(&self, op: crate::admin::AdminOp<T>) -> Result<T> {
-        match self.execute(&op.req).await {
-            Ok((status, body)) => (op.parse)(status, body),
-            Err(e) => Err(crate::admin::route_missing(e, op.unsupported)),
-        }
+        self.execute(&op.req)
+            .await
+            .and_then(|(status, body)| (op.parse)(status, body))
+            .map_err(|e| crate::admin::route_missing(e, op.unsupported))
     }
 
     pub(crate) async fn run<T>(&self, op: Op<T>) -> Result<T> {
@@ -678,19 +678,19 @@ impl AsyncLagerBox {
         &self,
         filter: &UsbDeviceFilter,
     ) -> Result<Vec<UsbDeviceInfo>> {
-        match self.execute(&wire::usb_devices(filter)).await {
-            Ok((status, body)) => wire::parse_usb_devices(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::usb_devices_unsupported)),
-        }
+        self.execute(&wire::usb_devices(filter))
+            .await
+            .and_then(|(status, body)| wire::parse_usb_devices(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::usb_devices_unsupported))
     }
 
     // -- box lock / reservation ----------------------------------------------
 
     async fn lock_call(&self, req: &HttpRequest) -> Result<BoxLock> {
-        match self.execute(req).await {
-            Ok((status, body)) => wire::parse_lock(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::lock_unsupported)),
-        }
+        self.execute(req)
+            .await
+            .and_then(|(status, body)| wire::parse_lock(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::lock_unsupported))
     }
 
     /// Current box lock state (`GET /lock`); `locked: false` when free.
@@ -760,10 +760,10 @@ impl AsyncLagerBox {
         name: &str,
         limits: &SafetyLimits,
     ) -> Result<Option<SafetyLimits>> {
-        match self.execute(&wire::safety_limits_set(name, limits)).await {
-            Ok((status, body)) => wire::parse_safety_limits(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::safety_limits_unsupported)),
-        }
+        self.execute(&wire::safety_limits_set(name, limits))
+            .await
+            .and_then(|(status, body)| wire::parse_safety_limits(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::safety_limits_unsupported))
     }
 
     /// Remove a net's safety limits, returning it to unrestricted.
@@ -780,10 +780,10 @@ impl AsyncLagerBox {
     /// is safe to call as a bench health check. Older boxes fail with
     /// [`Error::UnsupportedByBox`].
     pub async fn nets_state(&self) -> Result<Vec<NetState>> {
-        match self.execute(&wire::nets_state()).await {
-            Ok((status, body)) => wire::parse_nets_state(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::nets_state_unsupported)),
-        }
+        self.execute(&wire::nets_state())
+            .await
+            .and_then(|(status, body)| wire::parse_nets_state(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::nets_state_unsupported))
     }
 
     /// The debug service's health (port 8765, or the debug-service URL):
@@ -817,10 +817,10 @@ impl AsyncLagerBox {
     /// box >= 0.46.0), with liveness detail to tell a live session from one
     /// that should be gone. Read-only.
     pub async fn uart_sessions(&self) -> Result<Vec<UartSession>> {
-        match self.execute(&wire::uart_sessions()).await {
-            Ok((status, body)) => wire::parse_uart_sessions(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::uart_sessions_unsupported)),
-        }
+        self.execute(&wire::uart_sessions())
+            .await
+            .and_then(|(status, body)| wire::parse_uart_sessions(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::uart_sessions_unsupported))
     }
 
     /// Force-release the UART session holding `name`
@@ -830,10 +830,10 @@ impl AsyncLagerBox {
     /// test. Fails with [`Error::Box`] status 404 when no session holds the
     /// net.
     pub async fn release_uart_session(&self, name: &str) -> Result<Vec<String>> {
-        match self.execute(&wire::release_uart_session(name)).await {
-            Ok((status, body)) => wire::parse_release_uart_session(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::uart_sessions_unsupported)),
-        }
+        self.execute(&wire::release_uart_session(name))
+            .await
+            .and_then(|(status, body)| wire::parse_release_uart_session(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::uart_sessions_unsupported))
     }
 
     /// Read the safety limits configured on a saved net, via `/nets/list`.

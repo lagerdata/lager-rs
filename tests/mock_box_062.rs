@@ -638,6 +638,48 @@ fn dmm_on_a_box_without_the_role_is_unsupported() {
 }
 
 // ---------------------------------------------------------------------------
+// A route an older box does not serve, as the box really answers it
+// ---------------------------------------------------------------------------
+
+/// The box's global 404 handler, for a path it does not serve.
+fn unknown_route(server: &MockServer, method: httpmock::Method, path: &str) {
+    server.mock(|when, then| {
+        when.method(method).path(path);
+        then.status(404).json_body(json!({
+            "error": "Not found", "message": "The requested endpoint does not exist"
+        }));
+    });
+}
+
+#[test]
+fn unknown_route_json_404_is_unsupported_for_box_level_calls() {
+    let server = MockServer::start();
+    unknown_route(&server, GET, "/nets/state");
+    unknown_route(&server, PUT, "/nets/supply1/safety-limits");
+    unknown_route(&server, GET, "/uart/sessions");
+    let lager = client(&server);
+    for err in [
+        lager.nets_state().unwrap_err(),
+        lager.clear_safety_limits("supply1").unwrap_err(),
+        lager.uart_sessions().unwrap_err(),
+    ] {
+        assert!(matches!(err, Error::UnsupportedByBox { .. }), "{err:?}");
+    }
+}
+
+#[test]
+fn a_routes_own_404_stays_a_box_error() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.method(PUT).path("/nets/ghost/safety-limits");
+        then.status(404)
+            .json_body(json!({"error": "no saved net named 'ghost'"}));
+    });
+    let err = client(&server).clear_safety_limits("ghost").unwrap_err();
+    assert!(matches!(err, Error::Box { status: 404, .. }), "{err:?}");
+}
+
+// ---------------------------------------------------------------------------
 // Async twins: the same requests, and the same old-box mapping
 // ---------------------------------------------------------------------------
 
@@ -710,6 +752,22 @@ mod async_parity {
             .unwrap();
         assert_eq!((r.value, r.unit.as_str()), (Some(99.8), "ohm"));
         m.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn async_unknown_route_json_404_is_unsupported() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/nets/state");
+                then.status(404).json_body(json!({
+                    "error": "Not found", "message": "The requested endpoint does not exist"
+                }));
+            })
+            .await;
+        let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();
+        let err = lager.nets_state().await.unwrap_err();
+        assert!(matches!(err, Error::UnsupportedByBox { .. }), "{err:?}");
     }
 
     #[tokio::test]

@@ -13,13 +13,23 @@ fn client(server: &MockServer) -> LagerBox {
     LagerBox::connect(server.address().to_string()).unwrap()
 }
 
-/// Flask's default page for a route this box does not serve.
-fn route_missing(server: &MockServer, method: httpmock::Method, path: &str, status: u16) {
+/// What the box's global 404 handler sends for a path it does not serve.
+fn route_missing(server: &MockServer, method: httpmock::Method, path: &str) {
     server.mock(|when, then| {
         when.method(method).path(path);
-        then.status(status)
+        then.status(404).json_body(json!({
+            "error": "Not found", "message": "The requested endpoint does not exist"
+        }));
+    });
+}
+
+/// Flask's page for a known path asked with a method it does not take.
+fn method_missing(server: &MockServer, method: httpmock::Method, path: &str) {
+    server.mock(|when, then| {
+        when.method(method).path(path);
+        then.status(405)
             .header("content-type", "text/html")
-            .body("<!doctype html><title>404 Not Found</title>");
+            .body("<!doctype html><title>405 Method Not Allowed</title>");
     });
 }
 
@@ -175,6 +185,18 @@ fn delete_unknown_net_is_a_404_box_error() {
 }
 
 #[test]
+fn a_known_path_without_the_method_is_unsupported() {
+    // A box that serves /nets/<name> for some methods but not DELETE.
+    let server = MockServer::start();
+    method_missing(&server, DELETE, "/nets/supply1");
+    let err = client(&server)
+        .admin()
+        .delete_net("supply1", None)
+        .unwrap_err();
+    assert_unsupported(err, "PUT/DELETE /nets");
+}
+
+#[test]
 fn delete_all_nets() {
     let server = MockServer::start();
     let m = server.mock(|when, then| {
@@ -256,9 +278,7 @@ fn net_metadata_on_an_unknown_net_is_a_404_box_error() {
 #[test]
 fn net_metadata_on_an_older_box_is_unsupported() {
     let server = MockServer::start();
-    // /nets/<name> exists for PUT and DELETE only, so an older box answers
-    // GET /nets/<name>/metadata with its default 404 page.
-    route_missing(&server, GET, "/nets/supply1/metadata", 404);
+    route_missing(&server, GET, "/nets/supply1/metadata");
     let err = client(&server).admin().net_metadata("supply1").unwrap_err();
     assert_unsupported(err, ">= 0.46.0");
 }
@@ -296,7 +316,7 @@ fn box_metadata_read_and_replace() {
 #[test]
 fn box_metadata_on_an_older_box_is_unsupported() {
     let server = MockServer::start();
-    route_missing(&server, PUT, "/box-metadata", 405);
+    route_missing(&server, PUT, "/box-metadata");
     let err = client(&server)
         .admin()
         .set_box_metadata(None, None)
@@ -348,7 +368,7 @@ fn bench_manifest_keeps_the_document() {
 #[test]
 fn bench_manifest_on_an_older_box_is_unsupported() {
     let server = MockServer::start();
-    route_missing(&server, GET, "/bench", 404);
+    route_missing(&server, GET, "/bench");
     let err = client(&server).admin().bench_manifest().unwrap_err();
     assert_unsupported(err, ">= 0.50.0");
 }
@@ -397,9 +417,9 @@ mod async_parity {
         server
             .mock_async(|when, then| {
                 when.method(GET).path("/bench");
-                then.status(404)
-                    .header("content-type", "text/html")
-                    .body("<!doctype html><title>404 Not Found</title>");
+                then.status(404).json_body(json!({
+                    "error": "Not found", "message": "The requested endpoint does not exist"
+                }));
             })
             .await;
         let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();

@@ -21,9 +21,9 @@
 //! before it sends anything. Hold [`crate::LagerBox::lock_guard`] around a
 //! change so another user's session cannot interleave with it.
 //!
-//! A route the box does not serve answers with its default 404 or 405 page,
-//! which comes back as [`crate::Error::UnsupportedByBox`] naming the box
-//! version that added it. A refusal the box explains (an unknown net, a bad
+//! A route the box does not serve comes back as
+//! [`crate::Error::UnsupportedByBox`], naming the box version that added it
+//! where one is known. A refusal the box explains (an unknown net, a bad
 //! field) comes back as [`crate::Error::Box`] with the box's message.
 
 use std::collections::BTreeMap;
@@ -274,17 +274,15 @@ pub(crate) struct AdminOp<T> {
     pub(crate) unsupported: &'static str,
 }
 
-/// Map a route the box does not serve (its default 404/405 page, which has
-/// no JSON body) to [`Error::UnsupportedByBox`].
+/// Map a route the box does not serve to [`Error::UnsupportedByBox`]; see
+/// [`crate::wire::is_route_missing`].
 pub(crate) fn route_missing(err: Error, unsupported: &'static str) -> Error {
-    match err {
-        Error::Box {
-            status: 404 | 405,
-            ref message,
-        } if message.contains("non-JSON") => Error::UnsupportedByBox {
+    if crate::wire::is_route_missing(&err) {
+        Error::UnsupportedByBox {
             message: unsupported.to_string(),
-        },
-        other => other,
+        }
+    } else {
+        err
     }
 }
 
