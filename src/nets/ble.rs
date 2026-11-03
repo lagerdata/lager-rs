@@ -5,17 +5,59 @@
 //! operations on it, so concurrent calls queue rather than fail.
 
 use super::box_handle;
-pub use crate::wire::{BleCharacteristic, BleDevice, BleDeviceInfo, BleService};
+pub use crate::wire::{BleCharacteristic, BleDevice, BleDeviceInfo, BleNotifications, BleService};
+
+/// A GATT characteristic, by UUID or by attribute handle, for the GATT
+/// methods on [`Ble`]. Converts from a `&str` / `String` (a UUID, such as
+/// `"00002a19-0000-1000-8000-00805f9b34fb"`) and from a `u16` (a handle).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GattChar {
+    /// Characteristic UUID.
+    Uuid(String),
+    /// Attribute handle, for a device with two characteristics that share
+    /// a UUID.
+    Handle(u16),
+}
+
+impl From<&str> for GattChar {
+    fn from(uuid: &str) -> Self {
+        GattChar::Uuid(uuid.to_string())
+    }
+}
+
+impl From<String> for GattChar {
+    fn from(uuid: String) -> Self {
+        GattChar::Uuid(uuid)
+    }
+}
+
+impl From<u16> for GattChar {
+    fn from(handle: u16) -> Self {
+        GattChar::Handle(handle)
+    }
+}
+
+impl GattChar {
+    fn to_json(&self) -> serde_json::Value {
+        match self {
+            GattChar::Uuid(uuid) => serde_json::json!(uuid),
+            GattChar::Handle(handle) => serde_json::json!(handle),
+        }
+    }
+}
 
 pub(crate) mod ops {
     use std::time::Duration;
 
     use serde_json::json;
 
+    use serde::Deserialize;
+
+    use super::GattChar;
     use crate::error::Result;
     use crate::wire::{
-        box_command, unit, value_as, value_list_field, BleDevice, BleDeviceInfo, CommandResponse,
-        Op, Timeout,
+        box_command, hex_decode, hex_encode, unit, value_as, value_list_field, BleDevice,
+        BleDeviceInfo, BleNotifications, CommandResponse, Op, Timeout,
     };
 
     const PATH: &str = "/ble/command";
@@ -93,6 +135,112 @@ pub(crate) mod ops {
         enumerate("connect", address, timeout)
     }
 
+    fn gatt(address: &str, characteristic: &GattChar) -> serde_json::Value {
+        json!({
+            "address": address,
+            "char": characteristic.to_json(),
+            "timeout": CONNECT_TIMEOUT_S,
+        })
+    }
+
+    fn parse_read(resp: CommandResponse) -> Result<Vec<u8>> {
+        #[derive(Deserialize)]
+        struct Read {
+            data: String,
+        }
+        hex_decode(&value_as::<Read>(resp)?.data)
+    }
+
+    fn parse_notifications(resp: CommandResponse) -> Result<BleNotifications> {
+        #[derive(Deserialize)]
+        struct Notified {
+            #[serde(default)]
+            messages: Vec<String>,
+            #[serde(default)]
+            timed_out: bool,
+        }
+        let n = value_as::<Notified>(resp)?;
+        Ok(BleNotifications {
+            messages: n
+                .messages
+                .iter()
+                .map(|m| hex_decode(m))
+                .collect::<Result<_>>()?,
+            timed_out: n.timed_out,
+        })
+    }
+
+    pub(crate) fn read(address: &str, characteristic: impl Into<GattChar>) -> Op<Vec<u8>> {
+        let characteristic = characteristic.into();
+        Op {
+            req: box_command(
+                PATH,
+                "read",
+                gatt(address, &characteristic),
+                budget(CONNECT_TIMEOUT_S),
+            ),
+            parse: parse_read,
+        }
+    }
+
+    fn write_op(
+        address: &str,
+        characteristic: GattChar,
+        data: &[u8],
+        response: Option<bool>,
+    ) -> Op<()> {
+        let mut params = gatt(address, &characteristic);
+        params["data"] = json!(hex_encode(data));
+        if let Some(response) = response {
+            params["response"] = json!(response);
+        }
+        Op {
+            req: box_command(PATH, "write", params, budget(CONNECT_TIMEOUT_S)),
+            parse: unit,
+        }
+    }
+
+    pub(crate) fn write(address: &str, characteristic: impl Into<GattChar>, data: &[u8]) -> Op<()> {
+        write_op(address, characteristic.into(), data, None)
+    }
+
+    pub(crate) fn write_with_response(
+        address: &str,
+        characteristic: impl Into<GattChar>,
+        data: &[u8],
+        response: bool,
+    ) -> Op<()> {
+        write_op(address, characteristic.into(), data, Some(response))
+    }
+
+    pub(crate) fn notify(
+        address: &str,
+        characteristic: impl Into<GattChar>,
+        max_messages: u32,
+        duration: f64,
+    ) -> Op<BleNotifications> {
+        let characteristic = characteristic.into();
+        let mut params = gatt(address, &characteristic);
+        params["max_messages"] = json!(max_messages);
+        params["duration"] = json!(duration);
+        Op {
+            req: box_command(PATH, "notify", params, budget(CONNECT_TIMEOUT_S + duration)),
+            parse: parse_notifications,
+        }
+    }
+
+    pub(crate) fn pair(address: &str) -> Op<()> {
+        Op {
+            req: box_command(
+                PATH,
+                "pair",
+                json!({ "address": address, "timeout": CONNECT_TIMEOUT_S }),
+                budget(CONNECT_TIMEOUT_S),
+            ),
+            parse: unit,
+        }
+    }
+
     pub(crate) fn disconnect(address: &str) -> Op<()> {
         Op {
             req: box_command(
@@ -133,5 +281,39 @@ box_handle! {
         fn connect_with_timeout(address: &str, timeout: f64) -> BleDeviceInfo = ops::connect_with_timeout;
         /// Ensure a device is disconnected from the box.
         fn disconnect(address: &str) -> () = ops::disconnect;
+        /// Read a GATT characteristic's value.
+        ///
+        /// Each GATT call connects, does its one operation and disconnects
+        /// (10 s connect timeout), so a device that needs a connection held
+        /// between operations cannot be driven this way. Box >= 0.62.0;
+        /// older boxes fail with [`crate::Error::UnsupportedByBox`].
+        fn read(address: &str, characteristic: impl Into<GattChar>) -> Vec<u8>
+            = ops::read, compat("read", ">= 0.62.0");
+        /// Write a GATT characteristic, letting the box pick write-with- or
+        /// without-response from the characteristic's properties. See
+        /// [`Ble::read`] for how the link is handled.
+        fn write(address: &str, characteristic: impl Into<GattChar>, data: &[u8]) -> ()
+            = ops::write, compat("write", ">= 0.62.0");
+        /// [`Ble::write`], choosing write-with-response (`true`) or
+        /// without-response (`false`) yourself.
+        fn write_with_response(
+            address: &str,
+            characteristic: impl Into<GattChar>,
+            data: &[u8],
+            response: bool,
+        ) -> () = ops::write_with_response, compat("write", ">= 0.62.0");
+        /// Subscribe to a characteristic and collect notifications until
+        /// `max_messages` (1-10000) arrive or `duration` seconds (0.1-300)
+        /// pass, whichever is first, then unsubscribe. A short count comes
+        /// back with [`BleNotifications::timed_out`] set, not as an error.
+        fn notify(
+            address: &str,
+            characteristic: impl Into<GattChar>,
+            max_messages: u32,
+            duration: f64,
+        ) -> BleNotifications = ops::notify, compat("notify", ">= 0.62.0");
+        /// Pair with a device through the box's BlueZ, which keeps the bond
+        /// (box >= 0.62.0).
+        fn pair(address: &str) -> () = ops::pair, compat("pair", ">= 0.62.0");
     }
 }

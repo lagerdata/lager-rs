@@ -11,7 +11,7 @@
 #![cfg(feature = "blocking")]
 
 use httpmock::prelude::*;
-use lager::{Error, FirmwareKind, LagerBox};
+use lager::{ConnectOptions, Error, FirmwareKind, LagerBox, Transport};
 use serde_json::{json, Value};
 
 fn debug_record() -> Value {
@@ -566,6 +566,105 @@ fn halt_sends_nothing_to_a_box_without_the_feature() {
         other => panic!("expected Error::UnsupportedByBox, got {other:?}"),
     }
     halt.assert_hits(0);
+}
+
+fn connected(transport: &str) -> Value {
+    json!({
+        "status": "connected", "device": "nrf52840_xxaa", "probe": "jlink1",
+        "serial": "000440012345", "backend": "jlink", "transport": transport,
+        "message": "JLinkGDBServer started successfully", "pid": 4321,
+        "gdb_server": {"status": "started", "gdb_port": 2331, "pid": 4321}
+    })
+}
+
+#[test]
+fn connect_with_jtag_checks_the_feature_then_sends_it() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let health = server.mock(|when, then| {
+        when.method(GET).path("/health");
+        then.status(200).json_body(json!({
+            "status": "healthy", "version": "1.0.0",
+            "features": ["erase_range", "halt", "connect_transport"]
+        }));
+    });
+    let connect = server.mock(|when, then| {
+        when.method(POST).path("/debug/connect").json_body(json!({
+            "net": debug_record(), "force": false, "halt": false, "gdb": true,
+            "transport": "JTAG"
+        }));
+        then.status(200).json_body(connected("JTAG"));
+    });
+    let opts = ConnectOptions {
+        transport: Some(Transport::Jtag),
+        ..ConnectOptions::default()
+    };
+    let conn = client(&server).debug("debug1").connect_with(&opts).unwrap();
+    assert_eq!(conn.transport.as_deref(), Some("JTAG"));
+    health.assert();
+    connect.assert();
+}
+
+#[test]
+fn connect_with_jtag_sends_nothing_to_a_box_without_the_feature() {
+    // An older box would start SWD and answer 200, so the crate asks first.
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    server.mock(|when, then| {
+        when.method(GET).path("/health");
+        then.status(200).json_body(json!({
+            "status": "healthy", "version": "1.0.0", "features": ["erase_range", "halt"]
+        }));
+    });
+    let connect = server.mock(|when, then| {
+        when.method(POST).path("/debug/connect");
+        then.status(200).json_body(connected("SWD"));
+    });
+    let opts = ConnectOptions {
+        transport: Some(Transport::Jtag),
+        ..ConnectOptions::default()
+    };
+    match client(&server)
+        .debug("debug1")
+        .connect_with(&opts)
+        .unwrap_err()
+    {
+        Error::UnsupportedByBox { message } => {
+            assert!(message.contains("'connect_transport'"), "{message}");
+            assert!(message.contains(">= 0.62.0"), "{message}");
+        }
+        other => panic!("expected Error::UnsupportedByBox, got {other:?}"),
+    }
+    connect.assert_hits(0);
+}
+
+#[test]
+fn connect_with_swd_needs_no_feature_check() {
+    let server = MockServer::start();
+    mock_nets_list(&server);
+    let health = server.mock(|when, then| {
+        when.method(GET).path("/health");
+        then.status(200)
+            .json_body(json!({"status": "healthy", "version": "1.0.0"}));
+    });
+    let connect = server.mock(|when, then| {
+        when.method(POST).path("/debug/connect").json_body(json!({
+            "net": debug_record(), "force": false, "halt": false, "gdb": true,
+            "transport": "SWD"
+        }));
+        // A box older than 0.62.0 sends no transport back.
+        then.status(200).json_body(json!({
+            "status": "connected", "device": "nrf52840_xxaa", "backend": "jlink"
+        }));
+    });
+    let opts = ConnectOptions {
+        transport: Some(Transport::Swd),
+        ..ConnectOptions::default()
+    };
+    let conn = client(&server).debug("debug1").connect_with(&opts).unwrap();
+    assert_eq!(conn.transport, None);
+    health.assert_hits(0);
+    connect.assert();
 }
 
 #[test]

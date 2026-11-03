@@ -4,7 +4,7 @@
 //!
 //! The crate is a pure HTTP/JSON client of the Lager box's API on port
 //! 9000: power supplies, battery simulators, e-loads, solar simulators,
-//! GPIO, ADC, DAC, thermocouples, watt meters, energy analyzers, SPI, I2C,
+//! GPIO, ADC, DAC, thermocouples, bench multimeters, watt meters, energy analyzers, SPI, I2C,
 //! USB hub ports, robot arms, webcams, routers, and (behind the `uart`
 //! feature) streaming UART. Box-level capabilities — the box's own BLE adapter
 //! ([`LagerBox::ble`]), WiFi interface ([`LagerBox::wifi`]), and BluFi
@@ -142,10 +142,13 @@ pub use async_client::{AsyncLagerBox, AsyncLagerBoxBuilder};
 // Net handle types and their vocabularies, re-exported at the crate root
 // for ergonomic imports (`use lager::{LagerBox, Level, EloadMode};`).
 pub use nets::battery::BatteryMode;
+pub use nets::ble::GattChar;
+pub use nets::blufi::BlufiOpMode;
 pub use nets::debug::{
     ConnectOptions, EraseOptions, FirmwareKind, FlashOptions, RttOptions, Transport,
 };
 pub use nets::dfu::DfuOptions;
+pub use nets::dmm::{DmmFunction, DmmOptions, DmmReading};
 pub use nets::eload::EloadMode;
 pub use nets::gpio::{Level, WaitForLevelOptions};
 pub use nets::hsm::{GenerateKey, GeneratedKey, HsmAuth, HsmInfo, HsmObject};
@@ -169,16 +172,17 @@ pub use wire::{
 #[cfg(feature = "blocking")]
 pub use nets::{
     adc::Adc, arm::Arm, battery::Battery, ble::Ble, blufi::Blufi, custom::CustomNet, dac::Dac,
-    debug::DebugNet, debug::RttStream, dfu::Dfu, eload::Eload, energy::EnergyAnalyzer, gpio::Gpio,
-    hsm::Hsm, i2c::I2c, router::Router, scope::Scope, solar::Solar, spi::Spi, supply::Supply,
-    thermocouple::Thermocouple, usb::UsbPort, watt::WattMeter, webcam::Webcam, wifi::Wifi,
+    debug::DebugNet, debug::RttStream, dfu::Dfu, dmm::Dmm, eload::Eload, energy::EnergyAnalyzer,
+    gpio::Gpio, hsm::Hsm, i2c::I2c, router::Router, scope::Scope, solar::Solar, spi::Spi,
+    supply::Supply, thermocouple::Thermocouple, usb::UsbPort, watt::WattMeter, webcam::Webcam,
+    wifi::Wifi,
 };
 
 #[cfg(feature = "async")]
 pub use nets::{
     adc::AsyncAdc, arm::AsyncArm, battery::AsyncBattery, ble::AsyncBle, blufi::AsyncBlufi,
-    custom::AsyncCustomNet, dac::AsyncDac, debug::AsyncDebugNet, dfu::AsyncDfu, eload::AsyncEload,
-    energy::AsyncEnergyAnalyzer, gpio::AsyncGpio, hsm::AsyncHsm, i2c::AsyncI2c,
+    custom::AsyncCustomNet, dac::AsyncDac, debug::AsyncDebugNet, dfu::AsyncDfu, dmm::AsyncDmm,
+    eload::AsyncEload, energy::AsyncEnergyAnalyzer, gpio::AsyncGpio, hsm::AsyncHsm, i2c::AsyncI2c,
     router::AsyncRouter, scope::AsyncScope, solar::AsyncSolar, spi::AsyncSpi, supply::AsyncSupply,
     thermocouple::AsyncThermocouple, usb::AsyncUsbPort, watt::AsyncWattMeter, webcam::AsyncWebcam,
     wifi::AsyncWifi,
@@ -206,13 +210,13 @@ pub use nets::scope_trace::ScopeStream;
 pub use nets::arm::ArmAcceleration;
 pub use nets::i2c::I2cEffectiveConfig;
 pub use nets::spi::SpiEffectiveConfig;
-pub use nets::usb::{UsbCycleOutcome, UsbCycleReport};
+pub use nets::usb::{UsbCycleOutcome, UsbCycleReport, UsbRecoverReport};
 pub use wire::{
     ArmPosition, BatteryModel, BatteryModelEntry, BatteryModelPoint, BatteryState,
-    BleCharacteristic, BleDevice, BleDeviceInfo, BleService, BlufiDeviceInfo, BlufiNetwork,
-    BlufiProvisionResult, BlufiStatus, BoxCapabilities, BoxLock, BoxStatus, DfuDevice, DfuOutput,
-    EloadState, EnergyReading, EnergyStats, Health, NetRecord, NetState, NetSummary,
-    RouterSystemInfo, SafetyLimits, StatSummary, SupplyState, UartSession, UsbDeviceFilter,
-    UsbDeviceInfo, WattReading, WebcamStatus, WebcamStream, WifiAccessPoint, WifiConnection,
-    WifiInterface,
+    BleCharacteristic, BleDevice, BleDeviceInfo, BleNotifications, BleService,
+    BlufiCustomDataReply, BlufiDeviceInfo, BlufiModeReport, BlufiNetwork, BlufiProvisionResult,
+    BlufiStatus, BoxCapabilities, BoxLock, BoxStatus, DfuDevice, DfuOutput, EloadState,
+    EnergyReading, EnergyStats, Health, NetRecord, NetState, NetSummary, RouterSystemInfo,
+    SafetyLimits, StatSummary, SupplyState, UartSession, UsbDeviceFilter, UsbDeviceInfo,
+    WattReading, WebcamStatus, WebcamStream, WifiAccessPoint, WifiConnection, WifiInterface,
 };

@@ -175,6 +175,14 @@ pub struct ConnectOptions {
     pub telnet_port: Option<u16>,
     /// RTT telnet port.
     pub rtt_telnet_port: Option<u16>,
+    /// Debug transport to start the backend with. `None` (and
+    /// `Some(Transport::Swd)`) is SWD, what every box has always started.
+    /// `Some(Transport::Jtag)` needs box >= 0.62.0: the crate checks the
+    /// debug service's features first and fails with
+    /// [`Error::UnsupportedByBox`] on an older box, which would start SWD
+    /// anyway. On OpenOCD, a net's own config file keeps its own
+    /// `transport select`.
+    pub transport: Option<Transport>,
 }
 
 impl Default for ConnectOptions {
@@ -190,6 +198,7 @@ impl Default for ConnectOptions {
             swo_port: None,
             telnet_port: None,
             rtt_telnet_port: None,
+            transport: None,
         }
     }
 }
@@ -214,7 +223,8 @@ pub struct FlashOptions {
     pub require_evidence: Option<bool>,
 }
 
-/// Debug transport for [`EraseOptions::transport`].
+/// Debug transport for [`ConnectOptions::transport`] and
+/// [`EraseOptions::transport`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     /// Serial Wire Debug.
@@ -288,6 +298,12 @@ pub(crate) fn debug_body(net_record: &Value, extra: Value) -> Value {
 pub(crate) mod ops {
     use super::*;
 
+    /// Whether a connect asks for something an older box would silently
+    /// replace with SWD.
+    pub(crate) fn needs_transport_feature(opts: &ConnectOptions) -> bool {
+        opts.transport.is_some_and(|t| t != Transport::Swd)
+    }
+
     pub(crate) fn connect(net: &Value, opts: &ConnectOptions) -> (String, Value, Timeout) {
         let mut extra = json!({
             "force": opts.force,
@@ -296,6 +312,9 @@ pub(crate) mod ops {
         });
         if let Some(speed) = &opts.speed {
             extra["speed"] = json!(speed);
+        }
+        if let Some(transport) = opts.transport {
+            extra["transport"] = json!(transport.as_str());
         }
         if let Some(script) = &opts.jlink_script {
             extra["jlink_script"] = json!(base64_encode(script));
@@ -548,6 +567,10 @@ impl DebugNet<'_> {
 
     /// Connect to the probe with explicit options.
     pub fn connect_with(&self, opts: &ConnectOptions) -> Result<DebugConnection> {
+        if ops::needs_transport_feature(opts) {
+            let (status, health) = self.client.execute_debug(&wire::debug_health_request())?;
+            wire::require_debug_feature(status, health, "connect_transport", ">= 0.62.0")?;
+        }
         let net = self.net_record()?;
         let (path, body, timeout) = ops::connect(&net, opts);
         let resp = self.call(&path, body, timeout)?;
@@ -911,6 +934,13 @@ impl AsyncDebugNet<'_> {
 
     /// Connect to the probe with explicit options.
     pub async fn connect_with(&self, opts: &ConnectOptions) -> Result<DebugConnection> {
+        if ops::needs_transport_feature(opts) {
+            let (status, health) = self
+                .client
+                .execute_debug(&wire::debug_health_request())
+                .await?;
+            wire::require_debug_feature(status, health, "connect_transport", ">= 0.62.0")?;
+        }
         let net = self.net_record().await?;
         let (path, body, timeout) = ops::connect(&net, opts);
         let resp = self.call(&path, body, timeout).await?;

@@ -109,6 +109,20 @@ pub(crate) mod ops {
         }
     }
 
+    pub(crate) fn disable_ocp(name: &str) -> Op<()> {
+        Op {
+            req: supply_command(name, "disable_ocp", json!({})),
+            parse: unit,
+        }
+    }
+
+    pub(crate) fn disable_ovp(name: &str) -> Op<()> {
+        Op {
+            req: supply_command(name, "disable_ovp", json!({})),
+            parse: unit,
+        }
+    }
+
     pub(crate) fn state(name: &str) -> Op<SupplyState> {
         Op {
             req: supply_command(name, "state", json!({})),
@@ -157,6 +171,17 @@ net_handle! {
         fn clear_ocp() -> () = ops::clear_ocp;
         /// Clear an over-voltage protection trip.
         fn clear_ovp() -> () = ops::clear_ovp;
+        /// Turn over-current protection off; [`Supply::set_ocp`] turns it
+        /// back on (box >= 0.62.0; older boxes fail with
+        /// [`crate::Error::UnsupportedByBox`]). The box refuses with
+        /// [`crate::Error::Box`] when the instrument cannot turn OCP off
+        /// (EA, Keithley 2281S, Keysight E36300), and when the net has a
+        /// `max_current` safety ceiling, which keeps OCP on.
+        fn disable_ocp() -> () = ops::disable_ocp, compat("disable_ocp", ">= 0.62.0");
+        /// Turn over-voltage protection off; [`Supply::set_ovp`] turns it
+        /// back on (box >= 0.62.0). Refused like [`Supply::disable_ocp`],
+        /// with a `max_voltage` ceiling keeping OVP on.
+        fn disable_ovp() -> () = ops::disable_ovp, compat("disable_ovp", ">= 0.62.0");
         /// Read the full structured state (measurements, setpoints,
         /// protection limits, output enable).
         fn state() -> SupplyState = ops::state;

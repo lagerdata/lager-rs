@@ -18,6 +18,7 @@ use crate::nets::custom::AsyncCustomNet;
 use crate::nets::dac::AsyncDac;
 use crate::nets::debug::AsyncDebugNet;
 use crate::nets::dfu::AsyncDfu;
+use crate::nets::dmm::AsyncDmm;
 use crate::nets::eload::AsyncEload;
 use crate::nets::energy::AsyncEnergyAnalyzer;
 use crate::nets::gpio::AsyncGpio;
@@ -892,6 +893,14 @@ impl AsyncLagerBox {
     /// Handle for a thermocouple net.
     pub fn thermocouple(&self, name: impl Into<String>) -> AsyncThermocouple<'_> {
         AsyncThermocouple {
+            client: self,
+            name: name.into(),
+        }
+    }
+
+    /// Handle for a bench multimeter (DMM) net (box >= 0.62.0).
+    pub fn dmm(&self, name: impl Into<String>) -> AsyncDmm<'_> {
+        AsyncDmm {
             client: self,
             name: name.into(),
         }

@@ -28,8 +28,8 @@ pub(crate) mod ops {
     use super::BatteryMode;
     use crate::error::Result;
     use crate::wire::{
-        battery_command, extra_as, state_as, unit, BatteryModel, BatteryModelEntry, BatteryState,
-        CommandResponse, Op,
+        battery_command, extra_as, state_as, unit, value_f64, BatteryModel, BatteryModelEntry,
+        BatteryState, CommandResponse, Op,
     };
 
     fn set_value(name: &str, action: &'static str, value: f64) -> Op<()> {
@@ -149,6 +149,20 @@ pub(crate) mod ops {
         }
     }
 
+    pub(crate) fn set_esr(name: &str, ohms: f64) -> Op<f64> {
+        Op {
+            req: battery_command(name, "set_esr", json!({ "value": ohms })),
+            parse: value_f64,
+        }
+    }
+
+    pub(crate) fn esr(name: &str) -> Op<f64> {
+        Op {
+            req: battery_command(name, "set_esr", json!({})),
+            parse: value_f64,
+        }
+    }
+
     pub(crate) fn state(name: &str) -> Op<BatteryState> {
         Op {
             req: battery_command(name, "state", json!({})),
@@ -214,6 +228,13 @@ net_handle! {
         fn clear_ovp() -> () = ops::clear_ovp;
         /// Clear all protection trips.
         fn clear() -> () = ops::clear;
+        /// Set the series-resistance (ESR) offset in ohms, added to the
+        /// model's internal resistance. Returns the offset the instrument
+        /// applied, which can differ from `ohms` because it clamps (box >=
+        /// 0.62.0; older boxes fail with [`crate::Error::UnsupportedByBox`]).
+        fn set_esr(ohms: f64) -> f64 = ops::set_esr, compat("set_esr", ">= 0.62.0");
+        /// Read the series-resistance (ESR) offset in ohms (box >= 0.62.0).
+        fn esr() -> f64 = ops::esr, compat("set_esr", ">= 0.62.0");
         /// Read the full structured simulator state.
         fn state() -> BatteryState = ops::state;
     }

@@ -69,6 +69,18 @@ pub(crate) mod ops {
         }
     }
 
+    pub(crate) fn disconnect(interface: &str) -> Op<()> {
+        Op {
+            req: box_command(
+                PATH,
+                "disconnect",
+                json!({ "interface": interface }),
+                budget(),
+            ),
+            parse: unit,
+        }
+    }
+
     pub(crate) fn delete(ssid: &str) -> Op<()> {
         Op {
             req: box_command(PATH, "delete", json!({ "ssid": ssid }), budget()),
@@ -94,5 +106,11 @@ box_handle! {
         fn connect_on(ssid: &str, password: &str, interface: &str) -> WifiConnection = ops::connect_on;
         /// Delete a saved connection profile by SSID/name.
         fn delete(ssid: &str) -> () = ops::delete;
+        /// Disconnect a wireless interface (e.g. `"wlan0"`). It stays down
+        /// until a [`Wifi::connect`] or a reboot: NetworkManager does not
+        /// bring it back by itself, so a box reached over that interface
+        /// goes offline (box >= 0.62.0; older boxes fail with
+        /// [`crate::Error::UnsupportedByBox`]).
+        fn disconnect(interface: &str) -> () = ops::disconnect, compat("disconnect", ">= 0.62.0");
     }
 }

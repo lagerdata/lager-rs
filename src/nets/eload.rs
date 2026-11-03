@@ -58,6 +58,20 @@ pub(crate) mod ops {
         }
     }
 
+    pub(crate) fn enable(name: &str) -> Op<()> {
+        Op {
+            req: net_command(name, ROLE, "enable", json!({}), Timeout::Default),
+            parse: unit,
+        }
+    }
+
+    pub(crate) fn disable(name: &str) -> Op<()> {
+        Op {
+            req: net_command(name, ROLE, "disable", json!({}), Timeout::Default),
+            parse: unit,
+        }
+    }
+
     pub(crate) fn setpoint(name: &str, mode: EloadMode) -> Op<f64> {
         Op {
             req: net_command(name, ROLE, mode.as_str(), json!({}), Timeout::Default),
@@ -77,5 +91,12 @@ net_handle! {
         fn set(mode: EloadMode, value: f64) -> () = ops::set;
         /// Read the stored setpoint for `mode`.
         fn setpoint(mode: EloadMode) -> f64 = ops::setpoint;
+        /// Switch the load's input on, so it sinks current at the current
+        /// setpoint (box >= 0.62.0; older boxes fail with
+        /// [`crate::Error::UnsupportedByBox`]).
+        fn enable() -> () = ops::enable, compat("enable", ">= 0.62.0");
+        /// Switch the load's input off. Call this in test teardown (box >=
+        /// 0.62.0).
+        fn disable() -> () = ops::disable, compat("disable", ">= 0.62.0");
     }
 }
