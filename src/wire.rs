@@ -581,6 +581,10 @@ pub struct DebugConnection {
     /// Debug backend that started (`"jlink"` or `"openocd"`).
     #[serde(default)]
     pub backend: Option<String>,
+    /// Transport the backend runs (`"SWD"` or `"JTAG"`); `None` from a box
+    /// older than 0.62.0, which always ran SWD.
+    #[serde(default)]
+    pub transport: Option<String>,
     /// Human-readable message.
     #[serde(default)]
     pub message: Option<String>,
@@ -665,22 +669,7 @@ pub fn debug_memory_bytes(body: &Value) -> Result<Vec<u8>> {
         .get("data")
         .and_then(Value::as_str)
         .ok_or_else(|| Error::Decode("memrd response missing 'data'".to_string()))?;
-    decode_hex(hex)
-}
-
-/// Decode a hex string into bytes.
-pub(crate) fn decode_hex(s: &str) -> Result<Vec<u8>> {
-    let s = s.trim();
-    if s.len() % 2 != 0 {
-        return Err(Error::Decode("odd-length hex string".to_string()));
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&s[i..i + 2], 16)
-                .map_err(|_| Error::Decode(format!("invalid hex byte '{}'", &s[i..i + 2])))
-        })
-        .collect()
+    hex_decode(hex)
 }
 
 // ---------------------------------------------------------------------------
@@ -834,6 +823,94 @@ pub(crate) fn unknown_action_compat(err: Error, action: &str, since: &str) -> Er
         },
         other => other,
     }
+}
+
+/// Reclassify an older box's refusal of an action it does not know as
+/// [`Error::UnsupportedByBox`], naming the box version that added it.
+/// Endpoints word that refusal three ways, and all three are recognized:
+///
+/// - `/net/command`: `Unknown action '<action>' for <role>`
+/// - `/supply/command`, `/battery/command`: `Unknown action: <action>`
+/// - `/wifi|ble|blufi/command`: `action (<a>|<b>|...) is required`, a list
+///   that does not include `<action>`
+pub(crate) fn action_compat(err: Error, action: &str, since: &str) -> Error {
+    let refused = match &err {
+        Error::Box {
+            status: 400,
+            message,
+        } => {
+            message.contains(&format!("Unknown action '{action}'"))
+                || message.trim_end() == format!("Unknown action: {action}")
+                || message
+                    .strip_prefix("action (")
+                    .and_then(|rest| rest.split_once(") is required"))
+                    .is_some_and(|(list, _)| !list.split('|').any(|a| a == action))
+        }
+        _ => false,
+    };
+    if refused {
+        Error::UnsupportedByBox {
+            message: format!("the '{action}' action requires box software {since}"),
+        }
+    } else {
+        err
+    }
+}
+
+/// Decode a lowercase or uppercase hex string, as the box sends memory reads
+/// and GATT and BluFi data. Non-ASCII input is refused before slicing, which
+/// could otherwise split a character and panic.
+pub(crate) fn hex_decode(s: &str) -> Result<Vec<u8>> {
+    let s = s.trim();
+    let bad = || Error::Decode(format!("invalid hex data from the box: '{s}'"));
+    if s.len() % 2 != 0 || !s.is_ascii() {
+        return Err(bad());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| bad()))
+        .collect()
+}
+
+/// Encode bytes as lowercase hex, as the box expects GATT and BluFi data.
+pub(crate) fn hex_encode(data: &[u8]) -> String {
+    data.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Notifications collected by [`crate::Ble::notify`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BleNotifications {
+    /// Each notification's payload, in arrival order.
+    pub messages: Vec<Vec<u8>>,
+    /// `true` when the window ended before `max_messages` arrived.
+    pub timed_out: bool,
+}
+
+/// Result of [`crate::Blufi::set_mode`]: the mode asked for, and the WiFi
+/// state the device reports afterwards. The two can differ: a SoftAP mode
+/// can need more setup before the device shows it, so a mismatch is not an
+/// error.
+#[derive(Debug, Clone, Deserialize)]
+#[non_exhaustive]
+pub struct BlufiModeReport {
+    /// The op-mode code sent (0 NULL, 1 STA, 2 SoftAP, 3 STA+SoftAP).
+    #[serde(default, deserialize_with = "lenient::opt_i64")]
+    pub requested: Option<i64>,
+    /// WiFi state the device reports after the change.
+    #[serde(flatten)]
+    pub status: BlufiStatus,
+}
+
+/// Result of [`crate::Blufi::send_custom_data`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BlufiCustomDataReply {
+    /// Bytes sent.
+    pub sent: usize,
+    /// Custom data the device sent back within the reply window, one entry
+    /// per frame. Empty with no reply window.
+    pub replies: Vec<Vec<u8>>,
 }
 
 /// Deserialize the `state` field into a typed struct.
@@ -1012,6 +1089,34 @@ pub struct BoxCapabilities {
     /// >= 0.58.0). Not used by this crate, which reads the whole answer.
     #[serde(default, rename = "netsStateStream")]
     pub nets_state_stream: bool,
+    /// Whether an e-load net takes `enable` / `disable` (box >= 0.62.0); see
+    /// [`crate::Eload::enable`].
+    #[serde(default, rename = "eloadInputSwitch")]
+    pub eload_input_switch: bool,
+    /// Whether `/battery/command` takes `set_esr` (box >= 0.62.0); see
+    /// [`crate::Battery::set_esr`].
+    #[serde(default, rename = "batteryEsr")]
+    pub battery_esr: bool,
+    /// Whether `/supply/command` takes `disable_ocp` / `disable_ovp` (box
+    /// >= 0.62.0); see [`crate::Supply::disable_ocp`].
+    #[serde(default, rename = "supplyProtectionOff")]
+    pub supply_protection_off: bool,
+    /// Whether `/wifi/command` takes `disconnect` (box >= 0.62.0); see
+    /// [`crate::Wifi::disconnect`].
+    #[serde(default, rename = "wifiDisconnect")]
+    pub wifi_disconnect: bool,
+    /// Whether `/ble/command` takes the GATT actions `read`, `write`,
+    /// `notify` and `pair` (box >= 0.62.0); see [`crate::Ble::read`].
+    #[serde(default, rename = "bleGatt")]
+    pub ble_gatt: bool,
+    /// Whether `/blufi/command` takes `set_mode` (box >= 0.62.0); see
+    /// [`crate::Blufi::set_mode`].
+    #[serde(default, rename = "blufiDeviceMode")]
+    pub blufi_device_mode: bool,
+    /// Whether `/blufi/command` takes `custom_data` (box >= 0.62.0); see
+    /// [`crate::Blufi::send_custom_data`].
+    #[serde(default, rename = "blufiCustomData")]
+    pub blufi_custom_data: bool,
 }
 
 /// Response of `GET /status`.
@@ -2330,6 +2435,94 @@ mod tests {
         let caps: BoxCapabilities = serde_json::from_value(json!({"netCommand": true})).unwrap();
         assert!(!caps.safety_limits);
     }
+    fn refusal(message: &str) -> Error {
+        Error::Box {
+            status: 400,
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn action_compat_reads_all_three_refusals() {
+        for message in [
+            "Unknown action 'enable' for eload",
+            "Unknown action: enable",
+            "action (scan|info|connect|disconnect) is required",
+        ] {
+            let err = action_compat(refusal(message), "enable", ">= 0.62.0");
+            match err {
+                Error::UnsupportedByBox { message } => {
+                    assert!(message.contains("'enable'"), "{message}");
+                    assert!(message.contains(">= 0.62.0"), "{message}");
+                }
+                other => panic!("{message}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn action_compat_leaves_other_errors_alone() {
+        // The action is in the box's list: some other problem, not an old box.
+        assert!(matches!(
+            action_compat(
+                refusal("action (status|scan|connect|disconnect|delete) is required"),
+                "disconnect",
+                ">= 0.62.0"
+            ),
+            Error::Box { status: 400, .. }
+        ));
+        for message in [
+            // Another action's name, and a name that only starts the same.
+            "Unknown action: disable",
+            "Unknown action: enable_all",
+            "Unknown action 'disable' for eload",
+            "EA PSB cannot turn OCP off",
+        ] {
+            assert!(
+                matches!(
+                    action_compat(refusal(message), "enable", ">= 0.62.0"),
+                    Error::Box { status: 400, .. }
+                ),
+                "{message}"
+            );
+        }
+        // Only a 400 is a refusal.
+        let err = Error::Box {
+            status: 502,
+            message: "Unknown action: enable".to_string(),
+        };
+        assert!(matches!(
+            action_compat(err, "enable", ">= 0.62.0"),
+            Error::Box { status: 502, .. }
+        ));
+    }
+
+    #[test]
+    fn hex_round_trips_and_rejects_bad_input() {
+        assert_eq!(hex_decode("00ff10").unwrap(), vec![0x00, 0xff, 0x10]);
+        assert_eq!(hex_decode("ABcd").unwrap(), vec![0xab, 0xcd]);
+        assert_eq!(hex_decode("").unwrap(), Vec::<u8>::new());
+        assert_eq!(hex_encode(&[0x01, 0xab]), "01ab");
+        for bad in ["0", "zz", "0g", "\u{e9}e", "a\u{e9}a"] {
+            assert!(matches!(hex_decode(bad), Err(Error::Decode(_))), "{bad}");
+        }
+    }
+
+    #[test]
+    fn capabilities_parse_the_0_62_action_flags() {
+        let caps: BoxCapabilities = serde_json::from_value(json!({
+            "eloadInputSwitch": true, "batteryEsr": true, "supplyProtectionOff": true,
+            "wifiDisconnect": true, "bleGatt": true, "blufiDeviceMode": true,
+            "blufiCustomData": true
+        }))
+        .unwrap();
+        assert!(caps.eload_input_switch && caps.battery_esr && caps.supply_protection_off);
+        assert!(caps.wifi_disconnect && caps.ble_gatt);
+        assert!(caps.blufi_device_mode && caps.blufi_custom_data);
+        let caps: BoxCapabilities = serde_json::from_value(json!({})).unwrap();
+        assert!(!caps.eload_input_switch && !caps.ble_gatt && !caps.blufi_custom_data);
+    }
+
     #[test]
     fn path_segment_encodes_reserved_bytes() {
         assert_eq!(path_segment("uart1"), "uart1");

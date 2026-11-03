@@ -4,6 +4,56 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+Wraps the actions box software 0.62.0 adds to its HTTP API, so that a Rust test can do
+what a Python one on the box already could. Each new call fails with
+`Error::UnsupportedByBox` on an older box rather than being sent and ignored.
+
+### Added
+
+- **`Eload::enable()` / `disable()`** switch an e-load's input on and off.
+- **`Battery::set_esr(ohms)` / `esr()`** set and read the battery simulator's
+  series-resistance offset. Both return the instrument's value, which can
+  differ from the request because the instrument clamps it.
+- **`Supply::disable_ocp()` / `disable_ovp()`** turn a supply's protection off;
+  `set_ocp()` / `set_ovp()` turn it back on. The box refuses, as `Error::Box`,
+  on an instrument that cannot (EA, Keithley 2281S, Keysight E36300) and on a
+  net whose safety ceiling keeps that protection on.
+- **`UsbPort::recover_report()`** returns `UsbRecoverReport`, with the hub
+  ports the driver re-powered when it reports them. `recover()` is unchanged.
+- **`Wifi::disconnect(interface)`** takes a wireless interface down. It stays
+  down until a `connect()` or a reboot, so a box reached over it goes offline.
+- **`Ble::read()`, `write()`, `write_with_response()`, `notify()` and
+  `pair()`** work on one GATT characteristic, named by UUID or handle through
+  the new `GattChar`. `notify()` returns `BleNotifications`. Each call connects
+  and disconnects on its own.
+- **`Blufi::set_mode(device, BlufiOpMode)`** sets an ESP32's WiFi op mode and
+  returns `BlufiModeReport`, with the mode the device then shows.
+  **`Blufi::send_custom_data(device, data, reply_window)`** sends BluFi custom
+  data and returns `BlufiCustomDataReply`, with what the device sent back.
+- **`ConnectOptions::transport`** starts a debug probe on JTAG. JTAG first
+  checks the debug service for `connect_transport`, because an older box
+  would start SWD anyway. `DebugConnection::transport` reports what ran.
+- **`Dmm`** (`LagerBox::dmm`) wraps the new `dmm` role for bench
+  multimeters (Siglent SDM3065X): `measure(DmmFunction, &DmmOptions)` takes
+  one reading and returns `DmmReading`, with `value` set to `None` and
+  `overload` set when the meter is over range or the input is open;
+  `identify()` and `errors()` read the meter's `*IDN?` and error queue.
+  `DmmOptions` sets the range, NPLC and temperature sensor.
+- **`BoxCapabilities`** gains `eload_input_switch`, `battery_esr`,
+  `supply_protection_off`, `wifi_disconnect`, `ble_gatt`, `blufi_device_mode`
+  and `blufi_custom_data`.
+
+### Fixed
+
+- **`debug_memory_bytes` no longer panics on non-ASCII `data`.** It returns
+  `Error::Decode`, as it did for other bad hex.
+
+### Changed
+
+- **`ConnectOptions` has a new public field, `transport`.** Code that builds
+  it with a struct literal and no `..ConnectOptions::default()` stops
+  compiling; add the field or the default.
+
 ## [0.9.0] - 2026-10-30
 
 Wraps what box software 0.60.0 already serves and the crate did not reach: scope

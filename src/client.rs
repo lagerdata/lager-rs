@@ -16,6 +16,7 @@ use crate::nets::custom::CustomNet;
 use crate::nets::dac::Dac;
 use crate::nets::debug::DebugNet;
 use crate::nets::dfu::Dfu;
+use crate::nets::dmm::Dmm;
 use crate::nets::eload::Eload;
 use crate::nets::energy::EnergyAnalyzer;
 use crate::nets::gpio::Gpio;
@@ -915,6 +916,14 @@ impl LagerBox {
     /// Handle for a thermocouple net.
     pub fn thermocouple(&self, name: impl Into<String>) -> Thermocouple<'_> {
         Thermocouple {
+            client: self,
+            name: name.into(),
+        }
+    }
+
+    /// Handle for a bench multimeter (DMM) net (box >= 0.62.0).
+    pub fn dmm(&self, name: impl Into<String>) -> Dmm<'_> {
+        Dmm {
             client: self,
             name: name.into(),
         }

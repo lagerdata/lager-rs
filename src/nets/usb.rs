@@ -45,6 +45,18 @@ pub struct UsbCycleReport {
     pub message: Option<String>,
 }
 
+/// The full result of a [`UsbPort::recover_report`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct UsbRecoverReport {
+    /// The hub ports the driver re-powered, when it reports them (box >=
+    /// 0.62.0, and only drivers that re-power more than the net's own port,
+    /// such as the Plugable dock). `None` otherwise.
+    pub ports: Option<Vec<u32>>,
+    /// The box's message.
+    pub message: Option<String>,
+}
+
 pub(crate) mod ops {
     use serde_json::Value;
 
@@ -178,6 +190,26 @@ pub(crate) mod ops {
             parse: unit,
         }
     }
+
+    fn parse_recover_report(resp: CommandResponse) -> Result<super::UsbRecoverReport> {
+        let ports = match resp.extra.get("ports") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(serde_json::from_value::<Vec<u32>>(v.clone()).map_err(|e| {
+                Error::Decode(format!("invalid 'ports' in a recover response: {e}"))
+            })?),
+        };
+        Ok(super::UsbRecoverReport {
+            ports,
+            message: resp.message,
+        })
+    }
+
+    pub(crate) fn recover_report(name: &str) -> Op<super::UsbRecoverReport> {
+        Op {
+            req: usb_command(name, "recover"),
+            parse: parse_recover_report,
+        }
+    }
 }
 
 net_handle! {
@@ -268,6 +300,15 @@ impl UsbPort<'_> {
             .run(ops::recover(&self.name))
             .map_err(ops::cycle_compat)
     }
+
+    /// [`UsbPort::recover`], also returning which ports were re-powered when
+    /// the hub's driver reports them (box >= 0.62.0; `ports` is `None` from
+    /// an older box).
+    pub fn recover_report(&self) -> crate::error::Result<UsbRecoverReport> {
+        self.client
+            .run(ops::recover_report(&self.name))
+            .map_err(ops::cycle_compat)
+    }
 }
 
 #[cfg(feature = "async")]
@@ -327,6 +368,14 @@ impl AsyncUsbPort<'_> {
     pub async fn recover(&self) -> crate::error::Result<()> {
         self.client
             .run(ops::recover(&self.name))
+            .await
+            .map_err(ops::cycle_compat)
+    }
+
+    /// See [`UsbPort::recover_report`].
+    pub async fn recover_report(&self) -> crate::error::Result<UsbRecoverReport> {
+        self.client
+            .run(ops::recover_report(&self.name))
             .await
             .map_err(ops::cycle_compat)
     }

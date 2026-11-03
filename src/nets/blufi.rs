@@ -8,18 +8,46 @@
 
 use super::box_handle;
 pub use crate::wire::{
-    BleDevice, BlufiDeviceInfo, BlufiNetwork, BlufiProvisionResult, BlufiStatus,
+    BleDevice, BlufiCustomDataReply, BlufiDeviceInfo, BlufiModeReport, BlufiNetwork,
+    BlufiProvisionResult, BlufiStatus,
 };
+
+/// An ESP32 WiFi operation mode, for [`Blufi::set_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlufiOpMode {
+    /// WiFi off.
+    Null,
+    /// Station: the device joins a network.
+    Sta,
+    /// Access point: the device hosts a network.
+    SoftAp,
+    /// Station and access point at once.
+    StaSoftAp,
+}
+
+impl BlufiOpMode {
+    /// The BluFi protocol's code for the mode, as the box takes it.
+    pub fn code(&self) -> u8 {
+        match self {
+            BlufiOpMode::Null => 0,
+            BlufiOpMode::Sta => 1,
+            BlufiOpMode::SoftAp => 2,
+            BlufiOpMode::StaSoftAp => 3,
+        }
+    }
+}
 
 pub(crate) mod ops {
     use std::time::Duration;
 
     use serde_json::json;
 
+    use super::BlufiOpMode;
     use crate::error::Result;
     use crate::wire::{
-        box_command, value_as, value_list_field, BleDevice, BlufiDeviceInfo, BlufiNetwork,
-        BlufiProvisionResult, BlufiStatus, CommandResponse, Op, Timeout,
+        box_command, hex_decode, hex_encode, value_as, value_list_field, BleDevice,
+        BlufiCustomDataReply, BlufiDeviceInfo, BlufiModeReport, BlufiNetwork, BlufiProvisionResult,
+        BlufiStatus, CommandResponse, Op, Timeout,
     };
 
     const PATH: &str = "/blufi/command";
@@ -135,6 +163,62 @@ pub(crate) mod ops {
         }
     }
 
+    pub(crate) fn set_mode(device_name: &str, mode: BlufiOpMode) -> Op<BlufiModeReport> {
+        Op {
+            req: box_command(
+                PATH,
+                "set_mode",
+                json!({
+                    "device_name": device_name,
+                    "mode": mode.code(),
+                    "timeout": CONNECT_TIMEOUT_S,
+                }),
+                budget(CONNECT_TIMEOUT_S),
+            ),
+            parse: value_as::<BlufiModeReport>,
+        }
+    }
+
+    fn parse_custom_data(resp: CommandResponse) -> Result<BlufiCustomDataReply> {
+        #[derive(serde::Deserialize)]
+        struct Sent {
+            #[serde(default)]
+            sent: usize,
+            #[serde(default)]
+            replies: Vec<String>,
+        }
+        let sent: Sent = value_as(resp)?;
+        Ok(BlufiCustomDataReply {
+            sent: sent.sent,
+            replies: sent
+                .replies
+                .iter()
+                .map(|r| hex_decode(r))
+                .collect::<Result<_>>()?,
+        })
+    }
+
+    pub(crate) fn send_custom_data(
+        device_name: &str,
+        data: &[u8],
+        reply_window: f64,
+    ) -> Op<BlufiCustomDataReply> {
+        Op {
+            req: box_command(
+                PATH,
+                "custom_data",
+                json!({
+                    "device_name": device_name,
+                    "data": hex_encode(data),
+                    "reply_timeout": reply_window,
+                    "timeout": CONNECT_TIMEOUT_S,
+                }),
+                budget(CONNECT_TIMEOUT_S + reply_window),
+            ),
+            parse: parse_custom_data,
+        }
+    }
+
     pub(crate) fn version(device_name: &str) -> Op<Option<String>> {
         fn parse_version(resp: CommandResponse) -> Result<Option<String>> {
             #[derive(serde::Deserialize)]
@@ -187,5 +271,17 @@ box_handle! {
         fn status(device_name: &str) -> BlufiStatus = ops::status;
         /// Read the target's BluFi firmware version.
         fn version(device_name: &str) -> Option<String> = ops::version;
+        /// Set the target's WiFi operation mode. The report carries the
+        /// mode the device shows afterwards, which can differ from `mode`
+        /// without being an error (box >= 0.62.0; older boxes fail with
+        /// [`crate::Error::UnsupportedByBox`]).
+        fn set_mode(device_name: &str, mode: BlufiOpMode) -> BlufiModeReport
+            = ops::set_mode, compat("set_mode", ">= 0.62.0");
+        /// Send BluFi custom data (non-empty) to the target, then collect
+        /// the custom data it sends back for `reply_window` seconds (0-60;
+        /// 0 returns as soon as the data is sent, with no replies) (box >=
+        /// 0.62.0).
+        fn send_custom_data(device_name: &str, data: &[u8], reply_window: f64)
+            -> BlufiCustomDataReply = ops::send_custom_data, compat("custom_data", ">= 0.62.0");
     }
 }

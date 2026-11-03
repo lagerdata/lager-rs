@@ -20,17 +20,10 @@ capability flag, so an older box answers `Error::UnsupportedByBox`.
 - **Logic analyzer nets.** `lager logic` still runs over the `:5000`
   Python-exec path; there is no `logic` role on `/net/command`. Needed:
   channel setup, trigger, a single capture and protocol decode results.
-- **Rotation and actuate nets.** No `rotation` or `actuate` role on
-  `/net/command`.
-- **E-load enable and disable.** The `eload` role sets the CC/CV/CR/CP
-  setpoints and reads state, but cannot switch the input on or off.
-- **Battery simulator ESR.** `/battery/command` reads the ESR but has no
-  action to set it.
-- **BLE GATT.** `/ble/command` covers `scan`, `info`, `connect` and
-  `disconnect`; reading, writing and subscribing to characteristics are not
-  on it.
-- **WiFi disconnect.** `/wifi/command` covers `status`, `scan`, `connect`
-  and `delete`.
+- **Scope extended measurements, protocol triggers and bus decode.** The
+  `scope` role covers the basic measurements, edge triggers, cursors and
+  FFT, not the MSO5000's other measurements, its pulse/UART/I2C/SPI/CAN
+  triggers or its bus decode.
 - **Router client checks.** The router driver can report whether a client
   is connected and set client isolation, but neither is an action of the
   `router` role.
@@ -53,6 +46,17 @@ Until then, `LagerBox::bearer_token()` returns the token to attach to a raw
 HTTP call against any of these.
 
 ## Not planned
+
+- **Rotation and actuate nets.** The `rotation` role is a Phidget encoder
+  driver kept private in the Python API, and `actuate` moves a Dexarm to the
+  position saved on the net, which `Arm` already reaches with its own
+  moves.
+- **YubiHSM echo, object info and key import.** The `hsm` net serves the
+  operations its box-side adapter exposes. Key import would also carry a
+  private key over the network. These stay in box-side Python.
+- **Box-side defmt decoding.** RTT bytes come back raw; decode them on the
+  host, where the ELF already is, with `defmt-print -e <elf>` or the
+  `defmt-decoder` crate.
 
 - **GDB, OpenOCD and J-Link sessions beyond flash, erase, reset, halt and
   memory reads.** `LagerBox::debug_tunnel()` hands back a TCP stream to any
@@ -101,3 +105,8 @@ HTTP call against any of these.
   - Scope trace capture (`scope.capture()` / `scope.stream()`, feature
     `scope-trace`), over the WebSocket behind the box's `/scope` page.
   - Async UART, async interactive RTT and the async RTT log stream.
+- Box 0.62.0 + crate 0.10: e-load input on/off, the battery ESR offset,
+  supply OCP/OVP off, the ports USB `recover` re-powered, WiFi
+  `disconnect`, BLE GATT read/write/notify/pair, BluFi op mode and custom
+  data, `transport` on debug `connect`, and the new `dmm` role (bench
+  multimeters).

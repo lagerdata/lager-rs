@@ -14,6 +14,7 @@ pub mod custom;
 pub mod dac;
 pub mod debug;
 pub mod dfu;
+pub mod dmm;
 pub mod eload;
 pub mod energy;
 pub mod gpio;
@@ -40,7 +41,10 @@ pub mod wifi;
 /// Generates the blocking and async handle structs for one net type from a
 /// single method table, so the two API flavors can never drift. Each method
 /// is a thin wrapper over a pure `ops::*` function returning a
-/// [`crate::wire::Op`], which the client executes.
+/// [`crate::wire::Op`], which the client executes. A method the box gained
+/// later ends in `, compat("<action>", ">= <version>")`, so an older box's
+/// refusal comes back as [`crate::Error::UnsupportedByBox`]
+/// (see [`crate::wire::action_compat`]).
 macro_rules! net_handle {
     (
         $(#[$doc:meta])*
@@ -49,7 +53,8 @@ macro_rules! net_handle {
         methods: {
             $(
                 $(#[$mdoc:meta])*
-                fn $method:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty = $op:path;
+                fn $method:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty = $op:path
+                    $(, compat($action:literal, $since:literal))?;
             )*
         }
     ) => {
@@ -71,7 +76,10 @@ macro_rules! net_handle {
             $(
                 $(#[$mdoc])*
                 pub fn $method(&self, $($arg: $ty),*) -> $crate::error::Result<$ret> {
-                    self.client.run($op(&self.name, $($arg),*))
+                    let result = self.client.run($op(&self.name, $($arg),*));
+                    $(let result = result
+                        .map_err(|e| $crate::wire::action_compat(e, $action, $since));)?
+                    result
                 }
             )*
         }
@@ -94,7 +102,10 @@ macro_rules! net_handle {
             $(
                 $(#[$mdoc])*
                 pub async fn $method(&self, $($arg: $ty),*) -> $crate::error::Result<$ret> {
-                    self.client.run($op(&self.name, $($arg),*)).await
+                    let result = self.client.run($op(&self.name, $($arg),*)).await;
+                    $(let result = result
+                        .map_err(|e| $crate::wire::action_compat(e, $action, $since));)?
+                    result
                 }
             )*
         }
@@ -115,7 +126,8 @@ macro_rules! box_handle {
         methods: {
             $(
                 $(#[$mdoc:meta])*
-                fn $method:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty = $op:path;
+                fn $method:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty = $op:path
+                    $(, compat($action:literal, $since:literal))?;
             )*
         }
     ) => {
@@ -131,7 +143,10 @@ macro_rules! box_handle {
             $(
                 $(#[$mdoc])*
                 pub fn $method(&self, $($arg: $ty),*) -> $crate::error::Result<$ret> {
-                    self.client.run($op($($arg),*))
+                    let result = self.client.run($op($($arg),*));
+                    $(let result = result
+                        .map_err(|e| $crate::wire::action_compat(e, $action, $since));)?
+                    result
                 }
             )*
         }
@@ -148,7 +163,10 @@ macro_rules! box_handle {
             $(
                 $(#[$mdoc])*
                 pub async fn $method(&self, $($arg: $ty),*) -> $crate::error::Result<$ret> {
-                    self.client.run($op($($arg),*)).await
+                    let result = self.client.run($op($($arg),*)).await;
+                    $(let result = result
+                        .map_err(|e| $crate::wire::action_compat(e, $action, $since));)?
+                    result
                 }
             )*
         }
