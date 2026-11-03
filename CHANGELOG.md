@@ -4,9 +4,12 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
-Wraps the actions box software 0.62.0 adds to its HTTP API, so that a Rust test can do
-what a Python one on the box already could. Each new call fails with
-`Error::UnsupportedByBox` on an older box rather than being sent and ignored.
+## [0.10.0] - 2026-11-03
+
+Wraps what box software 0.62.0 adds to its HTTP API, so that a Rust test can do
+what a Python one on the box already could. The new calls need box 0.62.0; each
+fails with `Error::UnsupportedByBox` on an older box rather than being sent and
+ignored.
 
 ### Added
 
@@ -43,16 +46,16 @@ what a Python one on the box already could. Each new call fails with
   `supply_protection_off`, `wifi_disconnect`, `ble_gatt`, `blufi_device_mode`
   and `blufi_custom_data`.
 
-### Fixed
-
-- **`debug_memory_bytes` no longer panics on non-ASCII `data`.** It returns
-  `Error::Decode`, as it did for other bad hex.
-
 ### Changed
 
 - **`ConnectOptions` has a new public field, `transport`.** Code that builds
   it with a struct literal and no `..ConnectOptions::default()` stops
   compiling; add the field or the default.
+
+### Fixed
+
+- **`debug_memory_bytes` no longer panics on non-ASCII `data`.** It returns
+  `Error::Decode`, as it did for other bad hex.
 
 ## [0.9.0] - 2026-10-30
 
