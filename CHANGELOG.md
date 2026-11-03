@@ -32,11 +32,14 @@ All notable changes to the `lager-net` crate are documented here.
 
 ### Fixed
 
-- **The async client reports a route an older box does not serve as
-  `Error::UnsupportedByBox`, as the blocking client does.** It returned the
-  box's HTML error page as an empty body, so `nets_state()`, the safety-limit
-  calls, `lock()` and `usb_devices()` on `AsyncLagerBox` failed with a
-  generic error instead.
+- **A route an older box does not serve is `Error::UnsupportedByBox`
+  again.** The box answers an unknown path with a JSON 404,
+  `{"error": "Not found", ...}`, which the crate reported as `Error::Box`.
+  So `nets_state()`, the safety-limit calls, `lock()` and the UART session
+  calls failed with a generic 404 on a box that predates them. A route's own
+  404, such as an unknown net, is still `Error::Box`.
+- **The async client reports a non-JSON error page as an error**, as the
+  blocking client does, rather than as an empty body.
 
 ## [0.10.0] - 2026-11-03
 

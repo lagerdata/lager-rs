@@ -511,10 +511,9 @@ impl LagerBox {
     /// Execute one admin operation (feature `admin`).
     #[cfg(feature = "admin")]
     pub(crate) fn run_admin<T>(&self, op: crate::admin::AdminOp<T>) -> Result<T> {
-        match self.execute(&op.req) {
-            Ok((status, body)) => (op.parse)(status, body),
-            Err(e) => Err(crate::admin::route_missing(e, op.unsupported)),
-        }
+        self.execute(&op.req)
+            .and_then(|(status, body)| (op.parse)(status, body))
+            .map_err(|e| crate::admin::route_missing(e, op.unsupported))
     }
 
     /// Execute one typed operation against a command endpoint.
@@ -686,19 +685,17 @@ impl LagerBox {
     /// Like [`LagerBox::usb_devices`], with box-side vid/pid/serial
     /// filters.
     pub fn usb_devices_matching(&self, filter: &UsbDeviceFilter) -> Result<Vec<UsbDeviceInfo>> {
-        match self.execute(&wire::usb_devices(filter)) {
-            Ok((status, body)) => wire::parse_usb_devices(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::usb_devices_unsupported)),
-        }
+        self.execute(&wire::usb_devices(filter))
+            .and_then(|(status, body)| wire::parse_usb_devices(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::usb_devices_unsupported))
     }
 
     // -- box lock / reservation ----------------------------------------------
 
     fn lock_call(&self, req: &HttpRequest) -> Result<BoxLock> {
-        match self.execute(req) {
-            Ok((status, body)) => wire::parse_lock(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::lock_unsupported)),
-        }
+        self.execute(req)
+            .and_then(|(status, body)| wire::parse_lock(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::lock_unsupported))
     }
 
     /// Current box lock state (`GET /lock`); `locked: false` when free.
@@ -779,10 +776,9 @@ impl LagerBox {
         name: &str,
         limits: &SafetyLimits,
     ) -> Result<Option<SafetyLimits>> {
-        match self.execute(&wire::safety_limits_set(name, limits)) {
-            Ok((status, body)) => wire::parse_safety_limits(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::safety_limits_unsupported)),
-        }
+        self.execute(&wire::safety_limits_set(name, limits))
+            .and_then(|(status, body)| wire::parse_safety_limits(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::safety_limits_unsupported))
     }
 
     /// Remove a net's safety limits, returning it to unrestricted.
@@ -798,10 +794,9 @@ impl LagerBox {
     /// is safe to call as a bench health check. Older boxes fail with
     /// [`Error::UnsupportedByBox`].
     pub fn nets_state(&self) -> Result<Vec<NetState>> {
-        match self.execute(&wire::nets_state()) {
-            Ok((status, body)) => wire::parse_nets_state(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::nets_state_unsupported)),
-        }
+        self.execute(&wire::nets_state())
+            .and_then(|(status, body)| wire::parse_nets_state(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::nets_state_unsupported))
     }
 
     /// The debug service's health (port 8765, or the debug-service URL):
@@ -831,10 +826,9 @@ impl LagerBox {
     /// box >= 0.46.0), with liveness detail to tell a live session from one
     /// that should be gone. Read-only.
     pub fn uart_sessions(&self) -> Result<Vec<UartSession>> {
-        match self.execute(&wire::uart_sessions()) {
-            Ok((status, body)) => wire::parse_uart_sessions(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::uart_sessions_unsupported)),
-        }
+        self.execute(&wire::uart_sessions())
+            .and_then(|(status, body)| wire::parse_uart_sessions(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::uart_sessions_unsupported))
     }
 
     /// Force-release the UART session holding `name`
@@ -844,10 +838,9 @@ impl LagerBox {
     /// test. Fails with [`Error::Box`] status 404 when no session holds the
     /// net.
     pub fn release_uart_session(&self, name: &str) -> Result<Vec<String>> {
-        match self.execute(&wire::release_uart_session(name)) {
-            Ok((status, body)) => wire::parse_release_uart_session(status, body),
-            Err(e) => Err(wire::map_route_missing(e, wire::uart_sessions_unsupported)),
-        }
+        self.execute(&wire::release_uart_session(name))
+            .and_then(|(status, body)| wire::parse_release_uart_session(status, body))
+            .map_err(|e| wire::map_route_missing(e, wire::uart_sessions_unsupported))
     }
 
     /// Read the safety limits configured on a saved net, via `/nets/list`.

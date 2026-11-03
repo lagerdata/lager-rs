@@ -1825,16 +1825,29 @@ pub(crate) fn usb_devices_unsupported() -> Error {
     }
 }
 
-/// Map a route-missing 404 (Flask's non-JSON default page) to
-/// [`Error::UnsupportedByBox`] with an endpoint-specific message. Real box
-/// errors carry JSON bodies and pass through untouched.
-pub(crate) fn map_route_missing(err: Error, unsupported: fn() -> Error) -> Error {
+/// Whether `err` is a box saying it does not serve the route at all, rather
+/// than a route refusing the request. The box's global 404 handler answers
+/// an unknown path with `{"error": "Not found", ...}`; a route's own 404
+/// always names what it did not find. A known path asked with the wrong
+/// method gets Flask's non-JSON 405 page.
+pub(crate) fn is_route_missing(err: &Error) -> bool {
     match err {
         Error::Box {
-            status: 404,
-            ref message,
-        } if message.contains("non-JSON") => unsupported(),
-        other => other,
+            status: 404 | 405,
+            message,
+        } => message == "Not found" || message.contains("non-JSON"),
+        _ => false,
+    }
+}
+
+/// Map a route this box does not serve (see [`is_route_missing`]) to
+/// [`Error::UnsupportedByBox`] with an endpoint-specific message. A route's
+/// own refusals pass through untouched.
+pub(crate) fn map_route_missing(err: Error, unsupported: fn() -> Error) -> Error {
+    if is_route_missing(&err) {
+        unsupported()
+    } else {
+        err
     }
 }
 
