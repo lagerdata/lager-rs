@@ -23,7 +23,7 @@ box's debug service on port 8765.
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.9" }
+lager = { package = "lager-net", version = "0.10" }
 ```
 
 ```rust
@@ -133,6 +133,10 @@ newer surfaces need a newer box image and fail with
 | `hsm()` / `custom()` | >= 0.59.0 |
 | `Arm::get_acceleration()` / `set_acceleration_keep_retract()` | >= 0.60.0 |
 | `DebugNet::halt()` | >= 0.60.0 (OpenOCD nets; checked against the debug service's `/health` features) |
+| `Eload::enable()` / `disable()`, `Battery::set_esr()` / `esr()`, `Supply::disable_ocp()` / `disable_ovp()`, `UsbPort::recover_report()` | >= 0.62.0 |
+| `Wifi::disconnect()`, `Ble::read()` / `write()` / `write_with_response()` / `notify()` / `pair()`, `Blufi::set_mode()` / `send_custom_data()` | >= 0.62.0 |
+| `dmm()` | >= 0.62.0 |
+| `ConnectOptions::transport` set to JTAG | >= 0.62.0 (checked against the debug service's `/health` features) |
 
 Fields an older box does not send come back as `None` rather than failing:
 `DebugStatus` / `DebugInfo` `gdbserver_running` and `target_attached`
@@ -154,7 +158,7 @@ Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.9", features = ["async"] }
+lager = { package = "lager-net", version = "0.10", features = ["async"] }
 ```
 
 The streams work on both clients too: `AsyncDebugNet::rtt()` returns a
