@@ -713,6 +713,25 @@ mod async_parity {
     }
 
     #[tokio::test]
+    async fn async_route_missing_page_is_unsupported_like_blocking() {
+        // An older box answers a route it does not serve with Flask's HTML
+        // 404 page; the async client must report that as unsupported, as
+        // the blocking client always has.
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/nets/state");
+                then.status(404)
+                    .header("content-type", "text/html")
+                    .body("<!doctype html><title>404 Not Found</title>");
+            })
+            .await;
+        let lager = AsyncLagerBox::connect(server.address().to_string()).unwrap();
+        let err = lager.nets_state().await.unwrap_err();
+        assert!(matches!(err, Error::UnsupportedByBox { .. }), "{err:?}");
+    }
+
+    #[tokio::test]
     async fn async_wifi_disconnect_on_an_older_box_is_unsupported() {
         let server = MockServer::start_async().await;
         server

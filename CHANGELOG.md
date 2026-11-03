@@ -4,6 +4,40 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **The `admin` feature** adds `LagerBox::admin()` (and `AsyncLagerBox::admin()`)
+  for setting up a box from Rust, as `lager nets`, `lager instruments` and
+  `lager box bench export` do:
+  - `save_net()`, `rename_net()`, `delete_net()` and `delete_all_nets()`
+    change the box's saved nets. `NetRecord::new(name, role, instrument)` and
+    its builder methods make a record, and a record read with `nets()` can be
+    changed and saved back.
+  - `net_metadata()` / `set_net_metadata()` read and change a net's purpose,
+    notes, tags, DUT connection and test hints (box >= 0.46.0).
+    `NetMetadataUpdate` sets, leaves or clears each field.
+  - `box_metadata()` / `set_box_metadata()` read and replace the box's
+    description.
+  - `instruments()` lists what the box sees, and `bench_manifest()` returns
+    the bench manifest (box >= 0.50.0).
+
+  A route an older box does not serve fails with `Error::UnsupportedByBox`.
+  The box does not check the box lock on these routes, so hold
+  `lock_guard()` around a change.
+
+### Changed
+
+- **`NetRecord` implements `Default` and `Serialize`**, so it can be saved
+  with `Admin::save_net()`. Unset optional fields are left out of the JSON.
+
+### Fixed
+
+- **The async client reports a route an older box does not serve as
+  `Error::UnsupportedByBox`, as the blocking client does.** It returned the
+  box's HTML error page as an empty body, so `nets_state()`, the safety-limit
+  calls, `lock()` and `usb_devices()` on `AsyncLagerBox` failed with a
+  generic error instead.
+
 ## [0.10.0] - 2026-11-03
 
 Wraps what box software 0.62.0 adds to its HTTP API, so that a Rust test can do

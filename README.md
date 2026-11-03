@@ -153,6 +153,7 @@ and the `Arm::set_acceleration()` readback (0.60.0).
 | `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace; `AsyncUart` when `async` is on too |
 | `rtt` | no | bi-directional `RttSession` over the box's Socket.IO `/rtt` namespace (box >= 0.35.0); `AsyncRttSession` when `async` is on too |
 | `scope-trace` | no | scope waveform samples: `Scope::capture()` / `Scope::stream()` over the box's `/scope/<net>/ws` WebSocket |
+| `admin` | no | box setup through `admin()`: create, change and delete saved nets, net and box metadata, the instrument list and the bench manifest |
 
 Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.

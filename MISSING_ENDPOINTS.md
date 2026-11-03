@@ -33,14 +33,11 @@ capability flag, so an older box answers `Error::UnsupportedByBox`.
 
 ## Planned: the box serves it, the crate does not wrap it yet
 
-Box administration and provisioning, to come behind an `admin` feature:
+The rest of box administration, to come behind the `admin` feature:
 
-- net CRUD (`PUT/DELETE /nets/<name>`, `DELETE /nets`), net and box metadata
-  (`/nets/<name>/metadata`, `/box-metadata`)
 - custom drivers (`/drivers`, `/drivers/<type>/deps`), `/binaries` and
   `/download-file`
-- `/bench`, custom-device definitions (`/custom-devices`),
-  `/instruments/list`, `/diagnose/*` and `/hello`
+- custom-device assignment (`/custom-devices`) and `/diagnose/*`
 
 Until then, `LagerBox::bearer_token()` returns the token to attach to a raw
 HTTP call against any of these.
@@ -71,8 +68,10 @@ HTTP call against any of these.
 - **`lager python` remote-script execution and job control** (submit,
   detach, reattach, kill). The crate exists to replace those box-side Python
   scripts with Rust running on the host, so driving them is a non-goal.
+- **`GET /hello`.** It returns a fixed greeting; `health()` and `status()`
+  carry the information.
 - **Box-internal services:** the hardware service on `:8080` (`/invoke`,
-  `/cache/*`) and the `:5000` job runner. They are implementation details
+  `/cache/*`, `/diagnose/dispatcher`) and the `:5000` job runner. They are implementation details
   behind the public API, not an API of their own.
 
 ## History
@@ -110,3 +109,5 @@ HTTP call against any of these.
   `disconnect`, BLE GATT read/write/notify/pair, BluFi op mode and custom
   data, `transport` on debug `connect`, and the new `dmm` role (bench
   multimeters).
+- Crate (unreleased), feature `admin`: saved-net create, rename and delete,
+  net and box metadata, `/instruments/list` and `/bench`.

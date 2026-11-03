@@ -966,7 +966,9 @@ pub fn envelope(resp: CommandResponse) -> Result<CommandResponse> {
 // ---------------------------------------------------------------------------
 
 /// One saved-net record from `GET /nets/list` (the box's `saved_nets.json`).
-#[derive(Debug, Clone, Deserialize)]
+/// With the `admin` feature, the same type saves a net
+/// (`Admin::save_net`), so a record read here can be changed and saved back.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct NetRecord {
     /// Net name, e.g. `"supply1"`.
     #[serde(default)]
@@ -975,23 +977,23 @@ pub struct NetRecord {
     #[serde(default)]
     pub role: String,
     /// Instrument backing this net, e.g. `"Rigol DP832"`, `"LabJack T7"`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instrument: Option<String>,
     /// Pin / channel identifier (number or string depending on role).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin: Option<Value>,
     /// Channel (multi-channel instruments).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<Value>,
     /// VISA or device address.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
     /// Role-specific saved parameters (SPI mode, UART baudrate, ...).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<Map<String, Value>>,
     /// Safety ceilings the box enforces on this net (box >= 0.35.0).
     /// `None` means unrestricted.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safety_limits: Option<SafetyLimits>,
     /// Everything else in the record (mappings, scope_points, ...).
     #[serde(flatten)]
@@ -1763,7 +1765,7 @@ pub struct UsbDeviceInfo {
 }
 
 /// Percent-encode one query-string value (RFC 3986 unreserved set).
-fn encode_query_value(s: &str) -> String {
+pub(crate) fn encode_query_value(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {

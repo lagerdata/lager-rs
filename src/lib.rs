@@ -87,6 +87,9 @@
 //! - `scope-trace`: scope waveform capture over the box's `/scope/<net>/ws`
 //!   WebSocket (`Scope::capture` / `Scope::stream`; see
 //!   [`nets::scope_trace`]).
+//! - `admin`: box setup and management through `LagerBox::admin()`: saved
+//!   nets, net and box metadata, the instrument list and the bench manifest
+//!   (see the `admin` module).
 //!
 //! # Not yet on the HTTP API
 //!
@@ -98,6 +101,8 @@
 
 #![deny(missing_docs)]
 
+#[cfg(feature = "admin")]
+pub mod admin;
 mod auth;
 #[cfg(any(feature = "blocking", feature = "async"))]
 mod chunked;
@@ -113,6 +118,15 @@ mod async_client;
 mod client;
 
 pub use error::{Error, Result};
+
+#[cfg(all(feature = "admin", feature = "blocking"))]
+pub use admin::Admin;
+#[cfg(all(feature = "admin", feature = "async"))]
+pub use admin::AsyncAdmin;
+#[cfg(feature = "admin")]
+pub use admin::{
+    BenchManifest, BoxMetadata, Instrument, NetMetadata, NetMetadataFields, NetMetadataUpdate,
+};
 
 /// Environment variable read by `from_env` constructors (`LAGER_BOX_HOST`).
 pub const BOX_HOST_ENV: &str = "LAGER_BOX_HOST";

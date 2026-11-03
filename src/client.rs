@@ -508,6 +508,15 @@ impl LagerBox {
         Ok((status, gateway, body))
     }
 
+    /// Execute one admin operation (feature `admin`).
+    #[cfg(feature = "admin")]
+    pub(crate) fn run_admin<T>(&self, op: crate::admin::AdminOp<T>) -> Result<T> {
+        match self.execute(&op.req) {
+            Ok((status, body)) => (op.parse)(status, body),
+            Err(e) => Err(crate::admin::route_missing(e, op.unsupported)),
+        }
+    }
+
     /// Execute one typed operation against a command endpoint.
     pub(crate) fn run<T>(&self, op: Op<T>) -> Result<T> {
         let (status, body) = self.execute(&op.req)?;
@@ -1000,6 +1009,13 @@ impl LagerBox {
             client: self,
             name: name.into(),
         }
+    }
+
+    /// Box setup and management: saved nets, metadata, instruments and the
+    /// bench manifest (feature `admin`). See [`crate::admin`].
+    #[cfg(feature = "admin")]
+    pub fn admin(&self) -> crate::admin::Admin<'_> {
+        crate::admin::Admin { client: self }
     }
 
     /// Handle for the box's BLE adapter (box-level, not a saved net).
