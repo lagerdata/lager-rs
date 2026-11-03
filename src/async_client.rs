@@ -442,6 +442,15 @@ impl AsyncLagerBox {
             // Error responses (incl. gateway denials) may have no JSON body.
             Err(_) => Value::Null,
         };
+        // As the blocking client does: an error with no JSON body (Flask's
+        // default page for a route this box does not serve) is reported
+        // here, so `map_route_missing` can recognize it.
+        if gateway.is_none() && status >= 400 && body.is_null() {
+            return Err(Error::Box {
+                status,
+                message: format!("HTTP {status} (non-JSON body)"),
+            });
+        }
         Ok((status, gateway, body))
     }
 
@@ -574,6 +583,15 @@ impl AsyncLagerBox {
     }
 
     /// Execute one typed operation against a command endpoint.
+    /// Execute one admin operation (feature `admin`).
+    #[cfg(feature = "admin")]
+    pub(crate) async fn run_admin<T>(&self, op: crate::admin::AdminOp<T>) -> Result<T> {
+        match self.execute(&op.req).await {
+            Ok((status, body)) => (op.parse)(status, body),
+            Err(e) => Err(crate::admin::route_missing(e, op.unsupported)),
+        }
+    }
+
     pub(crate) async fn run<T>(&self, op: Op<T>) -> Result<T> {
         let (status, body) = self.execute(&op.req).await?;
         let resp = wire::parse_command(status, body)?;
@@ -977,6 +995,13 @@ impl AsyncLagerBox {
             client: self,
             name: name.into(),
         }
+    }
+
+    /// Box setup and management: saved nets, metadata, instruments and the
+    /// bench manifest (feature `admin`). See [`crate::admin`].
+    #[cfg(feature = "admin")]
+    pub fn admin(&self) -> crate::admin::AsyncAdmin<'_> {
+        crate::admin::AsyncAdmin { client: self }
     }
 
     /// Handle for the box's BLE adapter (box-level, not a saved net).

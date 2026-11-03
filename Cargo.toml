@@ -30,6 +30,9 @@ rtt = ["blocking", "dep:rust_socketio"]
 # Scope trace capture: waveform samples over the box's /scope/<net>/ws
 # WebSocket (`Scope::capture` / `Scope::stream`).
 scope-trace = ["blocking", "dep:tungstenite"]
+# Box setup and management: saved nets, net and box metadata, instruments and
+# the bench manifest (`LagerBox::admin`). Adds no dependency.
+admin = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
