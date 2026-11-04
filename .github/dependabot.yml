@@ -7,6 +7,15 @@ updates:
     groups:
       cargo-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # 0.8+ is edition 2024 (Rust 1.85); the msrv job checks tests on
+      # rust-version. Drop this when rust-version reaches 1.85.
+      - dependency-name: httpmock
+        versions: [">=0.8"]
+      # Must match the tungstenite rust_socketio depends on (see Cargo.toml).
+      # Drop this when rust_socketio moves.
+      - dependency-name: tungstenite
+        versions: [">=0.22"]
 
   - package-ecosystem: github-actions
     directory: /
