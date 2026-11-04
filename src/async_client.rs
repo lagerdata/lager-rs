@@ -344,8 +344,33 @@ impl AsyncLagerBox {
     /// credentials (CLI session store, with transparent refresh) and
     /// retrying once. Mirrors the blocking client exactly.
     async fn execute_at(&self, base: &str, req: &HttpRequest) -> Result<(u16, Value)> {
+        self.with_gateway_auth(
+            |token| async move { self.send_once(base, req, token.as_deref()).await },
+        )
+        .await
+    }
+
+    /// Send one request with a raw body (or none) and return `(status, raw
+    /// response body)`, with the same gateway handling as
+    /// [`AsyncLagerBox::execute`]. Used for uploads and file downloads.
+    #[cfg(feature = "admin")]
+    pub(crate) async fn execute_raw(&self, req: &wire::RawRequest) -> Result<(u16, Vec<u8>)> {
+        self.with_gateway_auth(
+            |token| async move { self.send_raw_once(req, token.as_deref()).await },
+        )
+        .await
+    }
+
+    /// Run `send` with the current credential. On a gateway denial, learn
+    /// the box→auth-server mapping (like the CLI) and retry once with a
+    /// credential the gateway has not just seen.
+    async fn with_gateway_auth<T, F, Fut>(&self, send: F) -> Result<(u16, T)>
+    where
+        F: Fn(Option<String>) -> Fut,
+        Fut: std::future::Future<Output = Result<(u16, Option<String>, T)>>,
+    {
         let token = self.current_token().await;
-        let (status, gateway, resp_body) = self.send_once(base, req, token.as_deref()).await?;
+        let (status, gateway, resp_body) = send(token.clone()).await?;
 
         let Some(auth_url) = gateway else {
             return Ok((status, resp_body));
@@ -359,7 +384,7 @@ impl AsyncLagerBox {
                 .resolve_token_async(&auth_url, token.as_deref())
                 .await
             {
-                let (status, gateway, resp_body) = self.send_once(base, req, Some(&fresh)).await?;
+                let (status, gateway, resp_body) = send(Some(fresh)).await?;
                 let Some(auth_url) = gateway else {
                     return Ok((status, resp_body));
                 };
@@ -401,40 +426,18 @@ impl AsyncLagerBox {
         req: &HttpRequest,
         token: Option<&str>,
     ) -> Result<(u16, Option<String>, Value)> {
-        let url = format!("{}{}", base, req.path);
-        let mut r = match req.method {
-            Method::Get => self.http.get(&url),
-            Method::Post => self.http.post(&url),
-            Method::Put => self.http.put(&url),
-            Method::Delete => self.http.delete(&url),
-        };
-        match req.timeout {
-            Timeout::Default => r = r.timeout(self.default_timeout),
-            Timeout::After(d) => r = r.timeout(d),
-            Timeout::Unbounded => {}
-        }
-        if let Some(token) = token {
-            r = r.header("Authorization", format!("Bearer {token}"));
-        }
+        let mut r = self.open(
+            &req.method,
+            &format!("{}{}", base, req.path),
+            &req.timeout,
+            token,
+        );
         if let Some(body) = &req.body {
             r = r.json(body);
         }
-        let resp = r.send().await.map_err(|e| {
-            if e.is_timeout() {
-                Error::Timeout(e.to_string())
-            } else {
-                Error::Connection(e.to_string())
-            }
-        })?;
+        let resp = r.send().await.map_err(transport_error)?;
         let status = resp.status().as_u16();
-        let gateway = if auth::is_denial(status) {
-            resp.headers()
-                .get(auth::DISCOVERY_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-        } else {
-            None
-        };
+        let gateway = gateway_denial(&resp);
         let body: Value = match resp.json().await {
             Ok(body) => body,
             Err(e) if e.is_timeout() => return Err(Error::Timeout(e.to_string())),
@@ -452,6 +455,57 @@ impl AsyncLagerBox {
             });
         }
         Ok((status, gateway, body))
+    }
+
+    /// One raw-body round-trip against the box API; see
+    /// [`AsyncLagerBox::execute_raw`].
+    #[cfg(feature = "admin")]
+    async fn send_raw_once(
+        &self,
+        req: &wire::RawRequest,
+        token: Option<&str>,
+    ) -> Result<(u16, Option<String>, Vec<u8>)> {
+        let mut r = self.open(
+            &req.method,
+            &format!("{}{}", self.base, req.path),
+            &req.timeout,
+            token,
+        );
+        if let Some(body) = &req.body {
+            r = r
+                .header("Content-Type", body.content_type.as_str())
+                .body(body.bytes.clone());
+        }
+        let resp = r.send().await.map_err(transport_error)?;
+        let status = resp.status().as_u16();
+        let gateway = gateway_denial(&resp);
+        let bytes = resp.bytes().await.map_err(transport_error)?;
+        Ok((status, gateway, bytes.to_vec()))
+    }
+
+    /// Start a request with the method, timeout policy and credential set.
+    fn open(
+        &self,
+        method: &Method,
+        url: &str,
+        timeout: &Timeout,
+        token: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let mut r = match method {
+            Method::Get => self.http.get(url),
+            Method::Post => self.http.post(url),
+            Method::Put => self.http.put(url),
+            Method::Delete => self.http.delete(url),
+        };
+        match timeout {
+            Timeout::Default => r = r.timeout(self.default_timeout),
+            Timeout::After(d) => r = r.timeout(*d),
+            Timeout::Unbounded => {}
+        }
+        if let Some(token) = token {
+            r = r.header("Authorization", format!("Bearer {token}"));
+        }
+        r
     }
 
     /// Open the debug service's RTT stream (`POST /debug/rtt`), with the
@@ -582,16 +636,16 @@ impl AsyncLagerBox {
         })
     }
 
-    /// Execute one typed operation against a command endpoint.
     /// Execute one admin operation (feature `admin`).
     #[cfg(feature = "admin")]
     pub(crate) async fn run_admin<T>(&self, op: crate::admin::AdminOp<T>) -> Result<T> {
-        self.execute(&op.req)
+        self.execute_raw(&op.req)
             .await
-            .and_then(|(status, body)| (op.parse)(status, body))
+            .and_then(|(status, bytes)| op.parse.complete(status, bytes))
             .map_err(|e| crate::admin::route_missing(e, op.unsupported))
     }
 
+    /// Execute one typed operation against a command endpoint.
     pub(crate) async fn run<T>(&self, op: Op<T>) -> Result<T> {
         let (status, body) = self.execute(&op.req).await?;
         let resp = wire::parse_command(status, body)?;
@@ -1088,5 +1142,27 @@ async fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<tokio::
         Ok(Ok(stream)) => Ok(stream),
         Ok(Err(e)) => Err(crate::tunnel::io_error(&context, e)),
         Err(_) => Err(Error::Timeout(format!("{context}: connect timed out"))),
+    }
+}
+
+/// A transport failure as a timeout or a connection error.
+fn transport_error(e: reqwest::Error) -> Error {
+    if e.is_timeout() {
+        Error::Timeout(e.to_string())
+    } else {
+        Error::Connection(e.to_string())
+    }
+}
+
+/// The auth-server URL a gateway denial (401/403/503 with the discovery
+/// header) carries, or `None`.
+fn gateway_denial(resp: &reqwest::Response) -> Option<String> {
+    if auth::is_denial(resp.status().as_u16()) {
+        resp.headers()
+            .get(auth::DISCOVERY_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    } else {
+        None
     }
 }

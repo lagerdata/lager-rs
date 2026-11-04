@@ -88,8 +88,8 @@
 //!   WebSocket (`Scope::capture` / `Scope::stream`; see
 //!   [`nets::scope_trace`]).
 //! - `admin`: box setup and management through `LagerBox::admin()`: saved
-//!   nets, net and box metadata, the instrument list and the bench manifest
-//!   (see the `admin` module).
+//!   nets, net and box metadata, the instrument list, the bench manifest,
+//!   custom drivers, binaries and file download (see the `admin` module).
 //!
 //! # Not yet on the HTTP API
 //!
@@ -125,7 +125,8 @@ pub use admin::Admin;
 pub use admin::AsyncAdmin;
 #[cfg(feature = "admin")]
 pub use admin::{
-    BenchManifest, BoxMetadata, Instrument, NetMetadata, NetMetadataFields, NetMetadataUpdate,
+    BenchManifest, BinaryAdded, BinaryEntry, BinaryList, BoxMetadata, DriverDeps, DriverEntry,
+    DriverInstall, DriverRemoval, Instrument, NetMetadata, NetMetadataFields, NetMetadataUpdate,
 };
 
 /// Environment variable read by `from_env` constructors (`LAGER_BOX_HOST`).

@@ -1,7 +1,9 @@
 //! Box setup and management (feature `admin`): create, change and delete
 //! saved nets, edit net and box metadata, list the instruments plugged in,
-//! and read the bench manifest. These are the calls behind `lager nets add`,
-//! `lager nets delete`, `lager instruments` and `lager box bench export`.
+//! read the bench manifest, install custom drivers, upload binaries and
+//! download files scripts leave on the box. These are the calls behind
+//! `lager nets add`, `lager nets delete`, `lager instruments`, `lager box
+//! bench export`, `lager drivers` and `lager binaries`.
 //!
 //! ```no_run
 //! # #[cfg(feature = "blocking")]
@@ -32,7 +34,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::wire::{HttpRequest, NetRecord};
+use crate::wire::{NetRecord, RawRequest};
 
 /// The fields of a net's metadata (`GET /nets/<name>/metadata`). Fields
 /// with no value read as an empty string or list.
@@ -221,6 +223,147 @@ impl BenchManifest {
     }
 }
 
+/// A custom driver's Python dependencies, as the box installed them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct DriverDeps {
+    /// `"ok"`, `"stale"` (installed for another Python or machine) or
+    /// `"missing"`.
+    #[serde(default)]
+    pub status: String,
+    /// Installed packages, as `name==version`.
+    #[serde(default)]
+    pub packages: Vec<String>,
+    /// The Python tag they were installed for, e.g. `"cp312"`.
+    #[serde(default)]
+    pub python: Option<String>,
+    /// The machine they were installed for, e.g. `"x86_64"`.
+    #[serde(default)]
+    pub machine: Option<String>,
+}
+
+/// One installed custom driver, from [`Admin::drivers`] and
+/// [`Admin::driver`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct DriverEntry {
+    /// Driver type, which is also the net role it serves.
+    #[serde(default, rename = "type")]
+    pub driver_type: String,
+    /// `"ok"`, or `"error"` with [`DriverEntry::error`] saying why.
+    #[serde(default)]
+    pub status: String,
+    /// Version from the driver's manifest.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Description from the driver's manifest.
+    #[serde(default)]
+    pub description: String,
+    /// SHA-256 of the installed bundle.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    /// Its Python dependencies, or `None` when it declares none.
+    #[serde(default)]
+    pub deps: Option<DriverDeps>,
+    /// Saved nets that use the driver.
+    #[serde(default)]
+    pub nets: Vec<String>,
+    /// The driver's manifest.
+    #[serde(default)]
+    pub manifest: Option<Value>,
+    /// Why the driver failed to load, when `status` is `"error"`.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// Result of [`Admin::install_driver`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct DriverInstall {
+    /// Driver type.
+    #[serde(default, rename = "type")]
+    pub driver_type: String,
+    /// Version from the manifest.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// SHA-256 of the bundle.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    /// Whether it replaced an installed version.
+    #[serde(default)]
+    pub replaced: bool,
+    /// Python packages the box installed for it.
+    #[serde(default)]
+    pub packages: Vec<String>,
+}
+
+/// Result of [`Admin::remove_driver`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct DriverRemoval {
+    /// Driver type.
+    #[serde(default, rename = "type")]
+    pub driver_type: String,
+    /// Whether the driver was removed.
+    #[serde(default)]
+    pub removed: bool,
+    /// Saved nets left without their driver (only with `force`).
+    #[serde(default)]
+    pub orphaned_nets: Vec<String>,
+}
+
+/// One file in the box's binaries directory.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct BinaryEntry {
+    /// File name.
+    #[serde(default)]
+    pub name: String,
+    /// Size in bytes.
+    #[serde(default)]
+    pub size: u64,
+    /// Whether it is executable.
+    #[serde(default)]
+    pub executable: bool,
+}
+
+/// The box's binaries directory, from [`Admin::binaries`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct BinaryList {
+    /// The files.
+    #[serde(default)]
+    pub binaries: Vec<BinaryEntry>,
+    /// The directory on the box host.
+    #[serde(default)]
+    pub host_path: String,
+    /// The same directory inside the box container, where scripts run.
+    #[serde(default)]
+    pub container_path: String,
+    /// Whether the container has the directory mounted.
+    #[serde(default)]
+    pub mounted: bool,
+}
+
+/// Result of [`Admin::add_binary`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct BinaryAdded {
+    /// File name.
+    #[serde(default)]
+    pub name: String,
+    /// Where the box wrote it.
+    #[serde(default)]
+    pub path: String,
+    /// Size in bytes.
+    #[serde(default)]
+    pub size: u64,
+    /// Whether the container needs a restart to see it, which `lager
+    /// update` does.
+    #[serde(default)]
+    pub restart_required: bool,
+}
+
 impl NetRecord {
     /// A net record to save with [`Admin::save_net`]. `instrument` is the
     /// name [`Admin::instruments`] reports, e.g. `"Rigol_DP832"`.
@@ -266,12 +409,41 @@ impl NetRecord {
 
 /// One admin request and the parser for its answer. Unlike [`crate::wire::Op`]
 /// these routes do not use the command envelope, so the parser sees the
-/// status and the raw body.
+/// status and the body. Bodies travel as bytes, so the same path carries
+/// JSON, uploads and file downloads.
 pub(crate) struct AdminOp<T> {
-    pub(crate) req: HttpRequest,
-    pub(crate) parse: fn(u16, Value) -> Result<T>,
+    pub(crate) req: RawRequest,
+    pub(crate) parse: Parse<T>,
     /// The error for a box that does not serve the route.
     pub(crate) unsupported: &'static str,
+}
+
+/// How an [`AdminOp`] reads its answer.
+pub(crate) enum Parse<T> {
+    /// A JSON answer.
+    Json(fn(u16, Value) -> Result<T>),
+    /// Raw bytes, such as a downloaded file.
+    Bytes(fn(u16, Vec<u8>) -> Result<T>),
+}
+
+impl<T> Parse<T> {
+    /// Turn a response into the result. A JSON route whose answer is not
+    /// JSON fails as the JSON client does: `Error::Decode` on success, and
+    /// a non-JSON `Error::Box` on an error status, which
+    /// [`crate::wire::is_route_missing`] recognizes.
+    pub(crate) fn complete(&self, status: u16, bytes: Vec<u8>) -> Result<T> {
+        match self {
+            Parse::Bytes(parse) => parse(status, bytes),
+            Parse::Json(parse) => match serde_json::from_slice::<Value>(&bytes) {
+                Ok(body) => parse(status, body),
+                Err(e) if status < 400 => Err(Error::Decode(format!("non-JSON response: {e}"))),
+                Err(_) => Err(Error::Box {
+                    status,
+                    message: format!("HTTP {status} (non-JSON body)"),
+                }),
+            },
+        }
+    }
 }
 
 /// Map a route the box does not serve to [`Error::UnsupportedByBox`]; see
@@ -292,9 +464,15 @@ pub(crate) mod ops {
     use serde::de::DeserializeOwned;
     use serde_json::{json, Value};
 
-    use super::{AdminOp, BenchManifest, BoxMetadata, Instrument, NetMetadata, NetMetadataUpdate};
+    use super::{
+        AdminOp, BenchManifest, BinaryAdded, BinaryList, BoxMetadata, DriverEntry, DriverInstall,
+        DriverRemoval, Instrument, NetMetadata, NetMetadataUpdate, Parse,
+    };
     use crate::error::{Error, Result};
-    use crate::wire::{encode_query_value, path_segment, HttpRequest, Method, NetRecord, Timeout};
+    use crate::wire::{
+        encode_query_value, multipart, path_segment, FormPart, Method, NetRecord, RawBody,
+        RawRequest, Timeout,
+    };
 
     const NETS: &str = "this box does not serve net changes over HTTP (PUT/DELETE /nets)";
     const NET_METADATA: &str =
@@ -302,18 +480,36 @@ pub(crate) mod ops {
     const BOX_METADATA: &str = "this box does not serve /box-metadata";
     const INSTRUMENTS: &str = "this box does not serve /instruments/list";
     const BENCH: &str = "this box does not serve /bench (requires box software >= 0.50.0)";
+    const DRIVERS: &str =
+        "this box does not serve /drivers (custom drivers require box software >= 0.59.0)";
+    const BINARIES: &str = "this box does not serve /binaries";
+    const DOWNLOAD: &str = "this box does not serve /download-file";
+
+    /// The box allows pip 300 s; the CLI waits 360 s.
+    const PIP_BUDGET: Duration = Duration::from_secs(360);
+    /// The CLI's budget for a binary upload.
+    const UPLOAD_BUDGET: Duration = Duration::from_secs(120);
 
     /// The CLI's budget for these routes.
     fn budget() -> Timeout {
         Timeout::After(Duration::from_secs(30))
     }
 
-    fn req(method: Method, path: String, body: Option<Value>) -> HttpRequest {
-        HttpRequest {
+    fn req(method: Method, path: String, body: Option<Value>) -> RawRequest {
+        RawRequest {
             method,
             path,
-            body,
+            body: body.as_ref().map(RawBody::json),
             timeout: budget(),
+        }
+    }
+
+    fn upload(method: Method, path: String, body: RawBody, timeout: Duration) -> RawRequest {
+        RawRequest {
+            method,
+            path,
+            body: Some(body),
+            timeout: Timeout::After(timeout),
         }
     }
 
@@ -379,7 +575,7 @@ pub(crate) mod ops {
                 format!("/nets/{}", path_segment(old_name)),
                 Some(record_body(record)),
             ),
-            parse: parse_unit,
+            parse: Parse::Json(parse_unit),
             unsupported: NETS,
         }
     }
@@ -391,7 +587,7 @@ pub(crate) mod ops {
         }
         AdminOp {
             req: req(Method::Delete, path, None),
-            parse: parse_unit,
+            parse: Parse::Json(parse_unit),
             unsupported: NETS,
         }
     }
@@ -399,7 +595,7 @@ pub(crate) mod ops {
     pub(crate) fn delete_all_nets() -> AdminOp<()> {
         AdminOp {
             req: req(Method::Delete, "/nets".to_string(), None),
-            parse: parse_unit,
+            parse: Parse::Json(parse_unit),
             unsupported: NETS,
         }
     }
@@ -411,7 +607,7 @@ pub(crate) mod ops {
                 format!("/nets/{}/metadata", path_segment(name)),
                 None,
             ),
-            parse: parse_as::<NetMetadata>,
+            parse: Parse::Json(parse_as::<NetMetadata>),
             unsupported: NET_METADATA,
         }
     }
@@ -423,7 +619,7 @@ pub(crate) mod ops {
                 format!("/nets/{}/metadata", path_segment(name)),
                 Some(update.body()),
             ),
-            parse: parse_as::<NetMetadata>,
+            parse: Parse::Json(parse_as::<NetMetadata>),
             unsupported: NET_METADATA,
         }
     }
@@ -431,7 +627,7 @@ pub(crate) mod ops {
     pub(crate) fn box_metadata() -> AdminOp<BoxMetadata> {
         AdminOp {
             req: req(Method::Get, "/box-metadata".to_string(), None),
-            parse: parse_as::<BoxMetadata>,
+            parse: Parse::Json(parse_as::<BoxMetadata>),
             unsupported: BOX_METADATA,
         }
     }
@@ -446,7 +642,7 @@ pub(crate) mod ops {
                 "/box-metadata".to_string(),
                 Some(json!({ "description": description, "updated_at": updated_at })),
             ),
-            parse: parse_as::<BoxMetadata>,
+            parse: Parse::Json(parse_as::<BoxMetadata>),
             unsupported: BOX_METADATA,
         }
     }
@@ -454,15 +650,179 @@ pub(crate) mod ops {
     pub(crate) fn instruments() -> AdminOp<Vec<Instrument>> {
         AdminOp {
             req: req(Method::Get, "/instruments/list".to_string(), None),
-            parse: parse_as::<Vec<Instrument>>,
+            parse: Parse::Json(parse_as::<Vec<Instrument>>),
             unsupported: INSTRUMENTS,
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct DriverList {
+        #[serde(default)]
+        drivers: Vec<DriverEntry>,
+    }
+
+    fn parse_drivers(status: u16, body: Value) -> Result<Vec<DriverEntry>> {
+        parse_as::<DriverList>(status, body).map(|list| list.drivers)
+    }
+
+    /// A file's bytes, or the box's refusal (an error status carries JSON).
+    fn parse_file(status: u16, bytes: Vec<u8>) -> Result<Vec<u8>> {
+        if (200..300).contains(&status) {
+            return Ok(bytes);
+        }
+        match serde_json::from_slice::<Value>(&bytes) {
+            Ok(body) => Err(refusal(status, &body)),
+            Err(_) => Err(Error::Box {
+                status,
+                message: format!("HTTP {status} (non-JSON body)"),
+            }),
+        }
+    }
+
+    pub(crate) fn drivers() -> AdminOp<Vec<DriverEntry>> {
+        AdminOp {
+            req: req(Method::Get, "/drivers".to_string(), None),
+            parse: Parse::Json(parse_drivers),
+            unsupported: DRIVERS,
+        }
+    }
+
+    pub(crate) fn driver(driver_type: &str) -> AdminOp<DriverEntry> {
+        AdminOp {
+            req: req(
+                Method::Get,
+                format!("/drivers/{}", path_segment(driver_type)),
+                None,
+            ),
+            parse: Parse::Json(parse_as::<DriverEntry>),
+            unsupported: DRIVERS,
+        }
+    }
+
+    pub(crate) fn install_driver(driver_type: &str, bundle: &[u8]) -> AdminOp<DriverInstall> {
+        let filename = format!("{driver_type}.zip");
+        let body = multipart(&[FormPart {
+            name: "bundle",
+            filename: Some(&filename),
+            content_type: Some("application/zip"),
+            data: bundle,
+        }]);
+        AdminOp {
+            req: upload(
+                Method::Put,
+                format!("/drivers/{}", path_segment(driver_type)),
+                body,
+                PIP_BUDGET,
+            ),
+            parse: Parse::Json(parse_as::<DriverInstall>),
+            unsupported: DRIVERS,
+        }
+    }
+
+    pub(crate) fn reinstall_driver_deps(driver_type: &str) -> AdminOp<Vec<String>> {
+        #[derive(serde::Deserialize)]
+        struct Packages {
+            #[serde(default)]
+            packages: Vec<String>,
+        }
+        fn parse(status: u16, body: Value) -> Result<Vec<String>> {
+            parse_as::<Packages>(status, body).map(|p| p.packages)
+        }
+        AdminOp {
+            req: RawRequest {
+                method: Method::Post,
+                path: format!("/drivers/{}/deps", path_segment(driver_type)),
+                body: None,
+                timeout: Timeout::After(PIP_BUDGET),
+            },
+            parse: Parse::Json(parse),
+            unsupported: DRIVERS,
+        }
+    }
+
+    pub(crate) fn remove_driver(driver_type: &str, force: bool) -> AdminOp<DriverRemoval> {
+        let mut path = format!("/drivers/{}", path_segment(driver_type));
+        if force {
+            path.push_str("?force=1");
+        }
+        AdminOp {
+            req: req(Method::Delete, path, None),
+            parse: Parse::Json(parse_as::<DriverRemoval>),
+            unsupported: DRIVERS,
+        }
+    }
+
+    pub(crate) fn binaries() -> AdminOp<BinaryList> {
+        AdminOp {
+            req: req(Method::Get, "/binaries/list".to_string(), None),
+            parse: Parse::Json(parse_as::<BinaryList>),
+            unsupported: BINARIES,
+        }
+    }
+
+    pub(crate) fn add_binary(name: &str, data: &[u8]) -> AdminOp<BinaryAdded> {
+        let body = multipart(&[
+            FormPart {
+                name: "binary",
+                filename: Some(name),
+                content_type: Some("application/octet-stream"),
+                data,
+            },
+            FormPart {
+                name: "name",
+                filename: None,
+                content_type: None,
+                data: name.as_bytes(),
+            },
+        ]);
+        AdminOp {
+            req: upload(
+                Method::Post,
+                "/binaries/add".to_string(),
+                body,
+                UPLOAD_BUDGET,
+            ),
+            parse: Parse::Json(parse_as::<BinaryAdded>),
+            unsupported: BINARIES,
+        }
+    }
+
+    pub(crate) fn remove_binary(name: &str) -> AdminOp<()> {
+        AdminOp {
+            req: req(
+                Method::Post,
+                "/binaries/remove".to_string(),
+                Some(json!({ "name": name })),
+            ),
+            parse: Parse::Json(parse_unit),
+            unsupported: BINARIES,
+        }
+    }
+
+    pub(crate) fn download_file(path: &str) -> AdminOp<Vec<u8>> {
+        download_file_with_timeout(path, None)
+    }
+
+    pub(crate) fn download_file_with_timeout(
+        path: &str,
+        timeout: Option<Duration>,
+    ) -> AdminOp<Vec<u8>> {
+        AdminOp {
+            req: RawRequest {
+                method: Method::Get,
+                path: format!("/download-file?filename={}", encode_query_value(path)),
+                body: None,
+                timeout: timeout.map_or(Timeout::Unbounded, Timeout::After),
+            },
+            parse: Parse::Bytes(parse_file),
+            unsupported: DOWNLOAD,
         }
     }
 
     pub(crate) fn bench_manifest() -> AdminOp<BenchManifest> {
         AdminOp {
             req: req(Method::Get, "/bench".to_string(), None),
-            parse: parse_manifest,
+            parse: Parse::Json(parse_manifest),
             unsupported: BENCH,
         }
     }
@@ -551,5 +911,38 @@ admin_handle! {
         fn instruments() -> Vec<Instrument> = ops::instruments;
         /// Read the bench manifest (box >= 0.50.0).
         fn bench_manifest() -> BenchManifest = ops::bench_manifest;
+        /// List the custom drivers installed on the box (box >= 0.59.0).
+        fn drivers() -> Vec<DriverEntry> = ops::drivers;
+        /// One installed driver. An unknown type is [`crate::Error::Box`]
+        /// (404).
+        fn driver(driver_type: &str) -> DriverEntry = ops::driver;
+        /// Install a custom driver from its zip bundle, as `lager drivers
+        /// install` does, replacing an installed version. The box installs
+        /// the Python packages the manifest declares, which can take
+        /// minutes; the call waits up to 6 minutes. A box before 0.60.0
+        /// installs no packages: if the bundle declares any, check
+        /// [`crate::BoxCapabilities::custom_driver_deps`] first.
+        fn install_driver(driver_type: &str, bundle: &[u8]) -> DriverInstall = ops::install_driver;
+        /// Install a driver's Python packages again, and return them.
+        fn reinstall_driver_deps(driver_type: &str) -> Vec<String> = ops::reinstall_driver_deps;
+        /// Remove a custom driver. The box refuses (409) while saved nets
+        /// use it, unless `force`, which leaves those nets without a driver.
+        fn remove_driver(driver_type: &str, force: bool) -> DriverRemoval = ops::remove_driver;
+        /// List the box's binaries directory, as `lager binaries list` does.
+        fn binaries() -> BinaryList = ops::binaries;
+        /// Upload an executable into the box's binaries directory, replacing
+        /// a file with the same name.
+        fn add_binary(name: &str, data: &[u8]) -> BinaryAdded = ops::add_binary;
+        /// Delete a file from the box's binaries directory.
+        fn remove_binary(name: &str) -> () = ops::remove_binary;
+        /// Download a file a script left on the box. The box only serves
+        /// files under `/tmp/lager-output`, `/tmp/lager-results` and
+        /// `/tmp/lager-job-output`; anything else is [`crate::Error::Box`]
+        /// (403). There is no client-side timeout.
+        fn download_file(path: &str) -> Vec<u8> = ops::download_file;
+        /// [`Admin::download_file`] with a client-side timeout (`None` for
+        /// none).
+        fn download_file_with_timeout(path: &str, timeout: Option<std::time::Duration>) -> Vec<u8>
+            = ops::download_file_with_timeout;
     }
 }
