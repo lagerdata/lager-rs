@@ -31,8 +31,8 @@ rtt = ["blocking", "dep:rust_socketio"]
 # WebSocket (`Scope::capture` / `Scope::stream`).
 scope-trace = ["blocking", "dep:tungstenite"]
 # Box setup and management (`LagerBox::admin`): saved nets, metadata,
-# instruments, the bench manifest, custom drivers, binaries and file download.
-# Adds no dependency.
+# instruments, the bench manifest, custom drivers, binaries, file download,
+# custom-device assignment and diagnostics. Adds no dependency.
 admin = []
 
 [dependencies]

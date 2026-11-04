@@ -1,9 +1,11 @@
 //! Box setup and management (feature `admin`): create, change and delete
 //! saved nets, edit net and box metadata, list the instruments plugged in,
-//! read the bench manifest, install custom drivers, upload binaries and
-//! download files scripts leave on the box. These are the calls behind
-//! `lager nets add`, `lager nets delete`, `lager instruments`, `lager box
-//! bench export`, `lager drivers` and `lager binaries`.
+//! read the bench manifest, install custom drivers, upload binaries,
+//! download files scripts leave on the box, assign USB-serial cables to
+//! custom devices, and run the box's diagnostics. These are the calls behind
+//! `lager nets add`, `lager nets delete`, `lager nets assign`, `lager
+//! instruments`, `lager box bench export`, `lager drivers`, `lager binaries`
+//! and `lager diagnose`.
 //!
 //! ```no_run
 //! # #[cfg(feature = "blocking")]
@@ -364,6 +366,248 @@ pub struct BinaryAdded {
     pub restart_required: bool,
 }
 
+/// A USB-serial cable, named by its serial number or by the USB port it is
+/// plugged into, for [`Admin::assign_custom_device`]. Use the port for a
+/// cable with no serial, or one sharing its serial with another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CableId {
+    /// The cable's USB serial number.
+    Serial(String),
+    /// The USB port path, e.g. `"1-1.4"`.
+    PortPath(String),
+}
+
+impl CableId {
+    fn body(&self) -> Map<String, Value> {
+        let (serial, port_path) = match self {
+            CableId::Serial(s) => (Value::String(s.clone()), Value::Null),
+            CableId::PortPath(p) => (Value::Null, Value::String(p.clone())),
+        };
+        let mut body = Map::new();
+        body.insert("serial".to_string(), serial);
+        body.insert("port_path".to_string(), port_path);
+        body
+    }
+}
+
+/// A device definition the box knows, from [`Admin::custom_devices`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct CatalogDevice {
+    /// Instrument name to assign, e.g. `"Acme_Thermal_Chamber"`.
+    #[serde(default)]
+    pub name: String,
+    /// Human-readable name.
+    #[serde(default)]
+    pub display_name: String,
+    /// Manufacturer.
+    #[serde(default)]
+    pub manufacturer: String,
+    /// Net roles it serves.
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// Channels per role.
+    #[serde(default)]
+    pub channels: BTreeMap<String, Value>,
+    /// How the box talks to it, e.g. `"serial"`.
+    #[serde(default)]
+    pub transport: String,
+    /// Baud rate used when an assignment names none.
+    #[serde(default)]
+    pub default_baud: Option<u32>,
+}
+
+/// A cable assigned to a device definition, from [`Admin::custom_devices`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct DeviceAssignment {
+    /// The instrument the cable is assigned to.
+    #[serde(default)]
+    pub instrument: String,
+    /// Cable serial number, when it is assigned by serial.
+    #[serde(default)]
+    pub serial: Option<String>,
+    /// USB port path, when it is assigned by port.
+    #[serde(default)]
+    pub port_path: Option<String>,
+    /// Baud rate.
+    #[serde(default)]
+    pub baud: Option<u32>,
+    /// The address to save on its nets.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// The serial device it is on now, when connected.
+    #[serde(default)]
+    pub tty: Option<String>,
+    /// Everything else the box reports (vid, pid, roles, channels, ...).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// An unassigned USB-serial cable the box sees, from
+/// [`Admin::custom_devices`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct SerialCable {
+    /// USB vendor ID, hex.
+    #[serde(default)]
+    pub vid: Option<String>,
+    /// USB product ID, hex.
+    #[serde(default)]
+    pub pid: Option<String>,
+    /// Serial number, when it has one.
+    #[serde(default)]
+    pub serial: Option<String>,
+    /// USB port path.
+    #[serde(default)]
+    pub port_path: Option<String>,
+    /// Its serial device, e.g. `"/dev/ttyUSB0"`.
+    #[serde(default)]
+    pub tty: Option<String>,
+    /// Everything else the box reports (manufacturer, product, by-id path,
+    /// ...).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The box's custom-device state, from [`Admin::custom_devices`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct CustomDevices {
+    /// Device definitions a cable can be assigned to.
+    #[serde(default)]
+    pub catalog: Vec<CatalogDevice>,
+    /// Current assignments.
+    #[serde(default)]
+    pub assignments: Vec<DeviceAssignment>,
+    /// Unassigned cables connected now.
+    #[serde(default)]
+    pub cables: Vec<SerialCable>,
+}
+
+/// Result of [`Admin::assign_custom_device`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct DeviceAssigned {
+    /// The stored assignment, with its address and serial device.
+    #[serde(flatten)]
+    pub assignment: DeviceAssignment,
+    /// Saved nets the box deleted because the cable now belongs to the
+    /// device: stale nets of an earlier assignment, and generic UART nets on
+    /// the same cable.
+    #[serde(default)]
+    pub deleted_nets: Vec<String>,
+}
+
+/// Result of [`Admin::remove_custom_device`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct DeviceRemoval {
+    /// Whether an assignment matched and was removed.
+    #[serde(default)]
+    pub removed: bool,
+    /// The instrument it was assigned to.
+    #[serde(default)]
+    pub instrument: Option<String>,
+    /// The address its nets used.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// Saved nets the box deleted with it.
+    #[serde(default)]
+    pub deleted_nets: Vec<String>,
+}
+
+/// What the box sees of a USB instrument, from [`Admin::diagnose_usb`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct UsbDiagnosis {
+    /// The VISA address diagnosed.
+    #[serde(default)]
+    pub address: String,
+    /// Whether the device is on the USB bus.
+    #[serde(default)]
+    pub enumerated: bool,
+    /// Whether it is a USBTMC device.
+    #[serde(default)]
+    pub is_usbtmc: bool,
+    /// Its device node, when enumerated.
+    #[serde(default)]
+    pub device_path: Option<String>,
+    /// Everything else (sysfs path, processes holding it, `dmesg` tail,
+    /// ...).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What the box sees of a USB hub, from [`Admin::diagnose_usbhub`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct UsbHubDiagnosis {
+    /// The address diagnosed.
+    #[serde(default)]
+    pub address: String,
+    /// Whether the hub is on the USB bus.
+    #[serde(default)]
+    pub enumerated: bool,
+    /// Whether the hub's SDK opened it: `None` when the probe was skipped
+    /// or the hub has no SDK diagnostics.
+    #[serde(default)]
+    pub hub_opens: Option<bool>,
+    /// Everything else (device numbers, SDK scan, holders, ...).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A VISA identity probe, from [`Admin::diagnose_visa`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct VisaDiagnosis {
+    /// The address probed.
+    #[serde(default)]
+    pub address: String,
+    /// The instrument's `*IDN?` reply, when it answered.
+    #[serde(default)]
+    pub idn: Option<String>,
+    /// Why the probe failed, when it did.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// `"busy"`, `"nodev"`, `"timeout"` or `"other"`, with `error`.
+    #[serde(default)]
+    pub error_class: Option<String>,
+    /// Whether the box skipped the probe because its hardware service
+    /// already holds a session for the address.
+    #[serde(default)]
+    pub skipped: bool,
+    /// How long the probe took.
+    #[serde(default)]
+    pub elapsed_ms: Option<f64>,
+    /// Everything else (the skip reason, ...).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A debug-probe check, from [`Admin::diagnose_jlink`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct JlinkDiagnosis {
+    /// The probe's address.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// The target device.
+    #[serde(default)]
+    pub device: Option<String>,
+    /// `"jlink"` or `"openocd"`.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// Whether the probe is on the USB bus.
+    #[serde(default)]
+    pub probe_enumerated: Option<bool>,
+    /// Everything else: the GDB server, the J-Link emulator list, the
+    /// connect attempt and its output, or the OpenOCD log tail.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 impl NetRecord {
     /// A net record to save with [`Admin::save_net`]. `instrument` is the
     /// name [`Admin::instruments`] reports, e.g. `"Rigol_DP832"`.
@@ -465,8 +709,10 @@ pub(crate) mod ops {
     use serde_json::{json, Value};
 
     use super::{
-        AdminOp, BenchManifest, BinaryAdded, BinaryList, BoxMetadata, DriverEntry, DriverInstall,
-        DriverRemoval, Instrument, NetMetadata, NetMetadataUpdate, Parse,
+        AdminOp, BenchManifest, BinaryAdded, BinaryList, BoxMetadata, CableId, CustomDevices,
+        DeviceAssigned, DeviceRemoval, DriverEntry, DriverInstall, DriverRemoval, Instrument,
+        JlinkDiagnosis, NetMetadata, NetMetadataUpdate, Parse, UsbDiagnosis, UsbHubDiagnosis,
+        VisaDiagnosis,
     };
     use crate::error::{Error, Result};
     use crate::wire::{
@@ -484,6 +730,8 @@ pub(crate) mod ops {
         "this box does not serve /drivers (custom drivers require box software >= 0.59.0)";
     const BINARIES: &str = "this box does not serve /binaries";
     const DOWNLOAD: &str = "this box does not serve /download-file";
+    const CUSTOM_DEVICES: &str = "this box does not serve /custom-devices";
+    const DIAGNOSE: &str = "this box does not serve /diagnose";
 
     /// The box allows pip 300 s; the CLI waits 360 s.
     const PIP_BUDGET: Duration = Duration::from_secs(360);
@@ -819,6 +1067,98 @@ pub(crate) mod ops {
         }
     }
 
+    fn timed(method: Method, path: String, body: Option<Value>, secs: u64) -> RawRequest {
+        RawRequest {
+            timeout: Timeout::After(Duration::from_secs(secs)),
+            ..req(method, path, body)
+        }
+    }
+
+    pub(crate) fn custom_devices() -> AdminOp<CustomDevices> {
+        AdminOp {
+            // The box scans every USB-serial cable, which takes seconds.
+            req: timed(Method::Get, "/custom-devices/list".to_string(), None, 60),
+            parse: Parse::Json(parse_as::<CustomDevices>),
+            unsupported: CUSTOM_DEVICES,
+        }
+    }
+
+    pub(crate) fn assign_custom_device(
+        instrument: &str,
+        cable: &CableId,
+        baud: Option<u32>,
+    ) -> AdminOp<DeviceAssigned> {
+        let mut body = cable.body();
+        body.insert("instrument".to_string(), json!(instrument));
+        if let Some(baud) = baud {
+            body.insert("baud".to_string(), json!(baud));
+        }
+        AdminOp {
+            req: timed(
+                Method::Post,
+                "/custom-devices/assign".to_string(),
+                Some(Value::Object(body)),
+                60,
+            ),
+            parse: Parse::Json(parse_as::<DeviceAssigned>),
+            unsupported: CUSTOM_DEVICES,
+        }
+    }
+
+    pub(crate) fn remove_custom_device(cable: &CableId) -> AdminOp<DeviceRemoval> {
+        AdminOp {
+            req: req(
+                Method::Post,
+                "/custom-devices/remove".to_string(),
+                Some(Value::Object(cable.body())),
+            ),
+            parse: Parse::Json(parse_as::<DeviceRemoval>),
+            unsupported: CUSTOM_DEVICES,
+        }
+    }
+
+    fn diagnose<T: DeserializeOwned>(
+        route: &str,
+        key: &str,
+        value: &str,
+        secs: u64,
+        parse: fn(u16, Value) -> Result<T>,
+    ) -> AdminOp<T> {
+        AdminOp {
+            req: timed(
+                Method::Get,
+                format!("/diagnose/{route}?{key}={}", encode_query_value(value)),
+                None,
+                secs,
+            ),
+            parse: Parse::Json(parse),
+            unsupported: DIAGNOSE,
+        }
+    }
+
+    pub(crate) fn diagnose_usb(address: &str) -> AdminOp<UsbDiagnosis> {
+        diagnose("usb", "address", address, 15, parse_as::<UsbDiagnosis>)
+    }
+
+    pub(crate) fn diagnose_usbhub(address: &str) -> AdminOp<UsbHubDiagnosis> {
+        diagnose(
+            "usbhub",
+            "address",
+            address,
+            30,
+            parse_as::<UsbHubDiagnosis>,
+        )
+    }
+
+    pub(crate) fn diagnose_visa(address: &str) -> AdminOp<VisaDiagnosis> {
+        diagnose("visa", "address", address, 15, parse_as::<VisaDiagnosis>)
+    }
+
+    pub(crate) fn diagnose_jlink(net: &str) -> AdminOp<JlinkDiagnosis> {
+        // A list of emulators, then an SWD connect: more than 30 s at worst.
+        diagnose("jlink", "net", net, 60, parse_as::<JlinkDiagnosis>)
+    }
+
     pub(crate) fn bench_manifest() -> AdminOp<BenchManifest> {
         AdminOp {
             req: req(Method::Get, "/bench".to_string(), None),
@@ -944,5 +1284,33 @@ admin_handle! {
         /// none).
         fn download_file_with_timeout(path: &str, timeout: Option<std::time::Duration>) -> Vec<u8>
             = ops::download_file_with_timeout;
+        /// The box's custom-device catalog, its assignments and the
+        /// unassigned USB-serial cables it sees, as `lager nets assign
+        /// --list` shows. The box scans the cables, which takes seconds.
+        fn custom_devices() -> CustomDevices = ops::custom_devices;
+        /// Assign a USB-serial cable to a device definition, as `lager nets
+        /// assign` does. This deletes saved nets that the assignment makes
+        /// stale, and generic UART nets on the same cable; the result lists
+        /// them. An unknown device, a cable that is not connected, or a
+        /// serial that matches two cables is [`crate::Error::Box`] (400).
+        fn assign_custom_device(instrument: &str, cable: &CableId, baud: Option<u32>)
+            -> DeviceAssigned = ops::assign_custom_device;
+        /// Remove a cable's assignment, and the saved nets that use it. A
+        /// cable with no assignment gives `removed: false`, not an error.
+        fn remove_custom_device(cable: &CableId) -> DeviceRemoval = ops::remove_custom_device;
+        /// What the box sees of a USB instrument, by VISA address, as `lager
+        /// diagnose` reports it. Read-only.
+        fn diagnose_usb(address: &str) -> UsbDiagnosis = ops::diagnose_usb;
+        /// What the box sees of a USB hub. For an Acroname hub this opens
+        /// the hub, waiting for its device lock.
+        fn diagnose_usbhub(address: &str) -> UsbHubDiagnosis = ops::diagnose_usbhub;
+        /// Probe a VISA instrument with `*IDN?`. This opens a new session to
+        /// the instrument, unless the box's hardware service already holds
+        /// one (then `skipped` is set). A failed probe is data, not an error.
+        fn diagnose_visa(address: &str) -> VisaDiagnosis = ops::diagnose_visa;
+        /// Check a debug net's probe. When the probe is idle, this connects
+        /// to the target over SWD, so do not call it during a flash. It can
+        /// take over 30 seconds.
+        fn diagnose_jlink(net: &str) -> JlinkDiagnosis = ops::diagnose_jlink;
     }
 }

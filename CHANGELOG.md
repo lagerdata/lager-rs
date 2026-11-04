@@ -28,6 +28,14 @@ All notable changes to the `lager-net` crate are documented here.
     binaries directory, as `lager binaries` does.
   - `download_file()` fetches a file a script left under the box's output
     directories, as bytes; `download_file_with_timeout()` sets a limit.
+  - `custom_devices()`, `assign_custom_device()` and `remove_custom_device()`
+    assign USB-serial cables to custom device definitions, as `lager nets
+    assign` does. `CableId` names a cable by serial or by USB port. Both
+    changes can delete saved nets, and the result lists them.
+  - `diagnose_usb()`, `diagnose_usbhub()`, `diagnose_visa()` and
+    `diagnose_jlink()` run the box's checks behind `lager diagnose`. The
+    hub, VISA and J-Link checks open the device; the J-Link one can connect
+    to the target over SWD.
 
   A route an older box does not serve fails with `Error::UnsupportedByBox`.
   The box does not check the box lock on these routes, so hold
