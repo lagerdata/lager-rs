@@ -34,10 +34,7 @@ capability flag, so an older box answers `Error::UnsupportedByBox`.
 ## Planned: the box serves it, the crate does not wrap it yet
 
 The rest of box administration, to come behind the `admin` feature:
-
-- custom drivers (`/drivers`, `/drivers/<type>/deps`), `/binaries` and
-  `/download-file`
-- custom-device assignment (`/custom-devices`) and `/diagnose/*`
+custom-device assignment (`/custom-devices`) and `/diagnose/*`.
 
 Until then, `LagerBox::bearer_token()` returns the token to attach to a raw
 HTTP call against any of these.
@@ -110,4 +107,5 @@ HTTP call against any of these.
   data, `transport` on debug `connect`, and the new `dmm` role (bench
   multimeters).
 - Crate (unreleased), feature `admin`: saved-net create, rename and delete,
-  net and box metadata, `/instruments/list` and `/bench`.
+  net and box metadata, `/instruments/list`, `/bench`, custom drivers,
+  `/binaries` and `/download-file`.

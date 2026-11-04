@@ -66,6 +66,90 @@ pub struct HttpRequest {
     pub timeout: Timeout,
 }
 
+/// A request whose body, and answer, are bytes rather than JSON: uploads
+/// and file downloads (feature `admin`).
+#[cfg(feature = "admin")]
+#[derive(Debug, Clone)]
+pub(crate) struct RawRequest {
+    pub(crate) method: Method,
+    pub(crate) path: String,
+    pub(crate) body: Option<RawBody>,
+    pub(crate) timeout: Timeout,
+}
+
+/// A request body and its media type.
+#[cfg(feature = "admin")]
+#[derive(Debug, Clone)]
+pub(crate) struct RawBody {
+    pub(crate) content_type: String,
+    pub(crate) bytes: Vec<u8>,
+}
+
+#[cfg(feature = "admin")]
+impl RawBody {
+    /// A JSON body.
+    pub(crate) fn json(value: &Value) -> Self {
+        RawBody {
+            content_type: "application/json".to_string(),
+            bytes: serde_json::to_vec(value).unwrap_or_default(),
+        }
+    }
+}
+
+/// One part of a `multipart/form-data` body: a form field, or a file when
+/// `filename` is set.
+#[cfg(feature = "admin")]
+pub(crate) struct FormPart<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) filename: Option<&'a str>,
+    pub(crate) content_type: Option<&'a str>,
+    pub(crate) data: &'a [u8],
+}
+
+/// Encode a `multipart/form-data` body (RFC 7578). The boundary is chosen so
+/// that it occurs in no part, which keeps the encoding deterministic for a
+/// given input.
+#[cfg(feature = "admin")]
+pub(crate) fn multipart(parts: &[FormPart<'_>]) -> RawBody {
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+    let mut n = 0u32;
+    let boundary = loop {
+        let candidate = format!("lager-net-boundary-{n}");
+        if !parts.iter().any(|p| contains(p.data, candidate.as_bytes())) {
+            break candidate;
+        }
+        n += 1;
+    };
+    // Header values are quoted; a quote or line break in one would end it.
+    let quote = |s: &str| s.replace(['"', '\r', '\n'], "_");
+    let mut bytes = Vec::new();
+    for part in parts {
+        bytes.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        let mut disposition = format!(
+            "Content-Disposition: form-data; name=\"{}\"",
+            quote(part.name)
+        );
+        if let Some(filename) = part.filename {
+            disposition.push_str(&format!("; filename=\"{}\"", quote(filename)));
+        }
+        bytes.extend_from_slice(disposition.as_bytes());
+        bytes.extend_from_slice(b"\r\n");
+        if let Some(content_type) = part.content_type {
+            bytes.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
+        }
+        bytes.extend_from_slice(b"\r\n");
+        bytes.extend_from_slice(part.data);
+        bytes.extend_from_slice(b"\r\n");
+    }
+    bytes.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    RawBody {
+        content_type: format!("multipart/form-data; boundary={boundary}"),
+        bytes,
+    }
+}
+
 /// A complete operation: the request to send plus the parser that turns the
 /// box's response envelope into a typed value. Net handles build these; the
 /// sync/async clients only execute them.
@@ -2510,6 +2594,42 @@ mod tests {
             action_compat(err, "enable", ">= 0.62.0"),
             Error::Box { status: 502, .. }
         ));
+    }
+
+    #[cfg(feature = "admin")]
+    #[test]
+    fn multipart_picks_a_boundary_absent_from_every_part() {
+        let data = b"--lager-net-boundary-0\r\nlager-net-boundary-1";
+        let body = multipart(&[FormPart {
+            name: "f",
+            filename: None,
+            content_type: None,
+            data,
+        }]);
+        assert_eq!(
+            body.content_type,
+            "multipart/form-data; boundary=lager-net-boundary-2"
+        );
+        let text = String::from_utf8(body.bytes).unwrap();
+        assert!(text.starts_with("--lager-net-boundary-2\r\n"), "{text}");
+        assert!(text.ends_with("\r\n--lager-net-boundary-2--\r\n"), "{text}");
+    }
+
+    #[cfg(feature = "admin")]
+    #[test]
+    fn multipart_header_values_cannot_break_out_of_their_quotes() {
+        let body = multipart(&[FormPart {
+            name: "binary",
+            filename: Some("a\"b\r\nX-Injected: 1"),
+            content_type: Some("application/octet-stream"),
+            data: b"",
+        }]);
+        let text = String::from_utf8(body.bytes).unwrap();
+        assert!(
+            text.contains("filename=\"a_b__X-Injected: 1\"\r\n"),
+            "{text}"
+        );
+        assert!(!text.contains("\r\nX-Injected"), "{text}");
     }
 
     #[test]

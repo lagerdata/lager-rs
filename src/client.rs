@@ -394,8 +394,26 @@ impl LagerBox {
     /// handles a gateway denial by resolving credentials (CLI session
     /// store, with transparent refresh) and retrying once.
     fn execute_at(&self, base: &str, req: &HttpRequest) -> Result<(u16, Value)> {
+        self.with_gateway_auth(|token| self.send_once(base, req, token))
+    }
+
+    /// Send one request with a raw body (or none) and return `(status, raw
+    /// response body)`, with the same gateway handling as
+    /// [`LagerBox::execute`]. Used for uploads and file downloads.
+    #[cfg(feature = "admin")]
+    pub(crate) fn execute_raw(&self, req: &wire::RawRequest) -> Result<(u16, Vec<u8>)> {
+        self.with_gateway_auth(|token| self.send_raw_once(req, token))
+    }
+
+    /// Run `send` with the current credential. On a gateway denial, learn
+    /// the box→auth-server mapping (like the CLI) and retry once with a
+    /// credential the gateway has not just seen.
+    fn with_gateway_auth<T>(
+        &self,
+        send: impl Fn(Option<&str>) -> Result<(u16, Option<String>, T)>,
+    ) -> Result<(u16, T)> {
         let token = self.current_token();
-        let (status, gateway, resp_body) = self.send_once(base, req, token.as_deref())?;
+        let (status, gateway, resp_body) = send(token.as_deref())?;
 
         let Some(auth_url) = gateway else {
             return Ok((status, resp_body));
@@ -408,7 +426,7 @@ impl LagerBox {
                 .auth
                 .resolve_token_blocking(&auth_url, token.as_deref())
             {
-                let (status, gateway, resp_body) = self.send_once(base, req, Some(&fresh))?;
+                let (status, gateway, resp_body) = send(Some(&fresh))?;
                 let Some(auth_url) = gateway else {
                     return Ok((status, resp_body));
                 };
@@ -452,47 +470,19 @@ impl LagerBox {
         req: &HttpRequest,
         token: Option<&str>,
     ) -> Result<(u16, Option<String>, Value)> {
-        let url = format!("{}{}", base, req.path);
-        let mut r = match req.method {
-            Method::Get => self.agent.request("GET", &url),
-            Method::Post => self.agent.request("POST", &url),
-            Method::Put => self.agent.request("PUT", &url),
-            Method::Delete => self.agent.request("DELETE", &url),
-        };
-        match req.timeout {
-            Timeout::Default => r = r.timeout(self.default_timeout),
-            Timeout::After(d) => r = r.timeout(d),
-            Timeout::Unbounded => {}
-        }
-        if let Some(token) = token {
-            r = r.set("Authorization", &format!("Bearer {token}"));
-        }
+        let r = self.open(
+            &req.method,
+            &format!("{}{}", base, req.path),
+            &req.timeout,
+            token,
+        );
         let outcome = match (&req.method, &req.body) {
             (Method::Post | Method::Put, Some(body)) => r.send_json(body.clone()),
             _ => r.call(),
         };
-        let resp = match outcome {
-            Ok(resp) => resp,
-            // ureq reports 4xx/5xx as Err(Status); the box still sends a
-            // JSON error body we need to surface.
-            Err(ureq::Error::Status(_, resp)) => resp,
-            Err(ureq::Error::Transport(t)) => {
-                let msg = t.to_string();
-                return if msg.to_ascii_lowercase().contains("timed out")
-                    || msg.to_ascii_lowercase().contains("timeout")
-                {
-                    Err(Error::Timeout(msg))
-                } else {
-                    Err(Error::Connection(msg))
-                };
-            }
-        };
+        let resp = Self::response(outcome)?;
         let status = resp.status();
-        let gateway = if auth::is_denial(status) {
-            resp.header(auth::DISCOVERY_HEADER).map(str::to_string)
-        } else {
-            None
-        };
+        let gateway = Self::gateway_denial(&resp);
         let body: Value = match resp.into_json() {
             Ok(body) => body,
             Err(e) if status < 400 => return Err(Error::Decode(format!("non-JSON response: {e}"))),
@@ -508,11 +498,99 @@ impl LagerBox {
         Ok((status, gateway, body))
     }
 
+    /// One raw-body round-trip against the box API; see
+    /// [`LagerBox::execute_raw`].
+    #[cfg(feature = "admin")]
+    fn send_raw_once(
+        &self,
+        req: &wire::RawRequest,
+        token: Option<&str>,
+    ) -> Result<(u16, Option<String>, Vec<u8>)> {
+        use std::io::Read;
+
+        let r = self.open(
+            &req.method,
+            &format!("{}{}", self.base, req.path),
+            &req.timeout,
+            token,
+        );
+        let outcome = match &req.body {
+            Some(body) => r
+                .set("Content-Type", &body.content_type)
+                .send_bytes(&body.bytes),
+            None => r.call(),
+        };
+        let resp = Self::response(outcome)?;
+        let status = resp.status();
+        let gateway = Self::gateway_denial(&resp);
+        let mut bytes = Vec::new();
+        resp.into_reader()
+            .read_to_end(&mut bytes)
+            .map_err(|e| Error::Connection(format!("reading the response failed: {e}")))?;
+        Ok((status, gateway, bytes))
+    }
+
+    /// Start a request with the method, timeout policy and credential set.
+    fn open(
+        &self,
+        method: &Method,
+        url: &str,
+        timeout: &Timeout,
+        token: Option<&str>,
+    ) -> ureq::Request {
+        let mut r = match method {
+            Method::Get => self.agent.request("GET", url),
+            Method::Post => self.agent.request("POST", url),
+            Method::Put => self.agent.request("PUT", url),
+            Method::Delete => self.agent.request("DELETE", url),
+        };
+        match timeout {
+            Timeout::Default => r = r.timeout(self.default_timeout),
+            Timeout::After(d) => r = r.timeout(*d),
+            Timeout::Unbounded => {}
+        }
+        if let Some(token) = token {
+            r = r.set("Authorization", &format!("Bearer {token}"));
+        }
+        r
+    }
+
+    /// The response, whatever its status: ureq reports 4xx/5xx as
+    /// `Err(Status)`, and the box still sends an error body to surface.
+    fn response(
+        outcome: std::result::Result<ureq::Response, ureq::Error>,
+    ) -> Result<ureq::Response> {
+        match outcome {
+            Ok(resp) => Ok(resp),
+            Err(ureq::Error::Status(_, resp)) => Ok(resp),
+            Err(ureq::Error::Transport(t)) => {
+                let msg = t.to_string();
+                if msg.to_ascii_lowercase().contains("timed out")
+                    || msg.to_ascii_lowercase().contains("timeout")
+                {
+                    Err(Error::Timeout(msg))
+                } else {
+                    Err(Error::Connection(msg))
+                }
+            }
+        }
+    }
+
+    /// The auth-server URL a gateway denial (401/403/503 with the discovery
+    /// header) carries, or `None`.
+    fn gateway_denial(resp: &ureq::Response) -> Option<String> {
+        if auth::is_denial(resp.status()) {
+            resp.header(auth::DISCOVERY_HEADER).map(str::to_string)
+        } else {
+            None
+        }
+    }
+
     /// Execute one admin operation (feature `admin`).
     #[cfg(feature = "admin")]
     pub(crate) fn run_admin<T>(&self, op: crate::admin::AdminOp<T>) -> Result<T> {
-        self.execute(&op.req)
-            .and_then(|(status, body)| (op.parse)(status, body))
+        self.execute_raw(&op.req)
+            .and_then(|(status, bytes)| op.parse.complete(status, bytes))
             .map_err(|e| crate::admin::route_missing(e, op.unsupported))
     }
 

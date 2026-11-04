@@ -20,6 +20,14 @@ All notable changes to the `lager-net` crate are documented here.
     description.
   - `instruments()` lists what the box sees, and `bench_manifest()` returns
     the bench manifest (box >= 0.50.0).
+  - `drivers()`, `driver()`, `install_driver()`, `reinstall_driver_deps()`
+    and `remove_driver()` manage custom drivers (box >= 0.59.0), as
+    `lager drivers` does. `install_driver()` uploads the zip bundle and waits
+    up to 6 minutes while the box installs its Python packages.
+  - `binaries()`, `add_binary()` and `remove_binary()` manage the box's
+    binaries directory, as `lager binaries` does.
+  - `download_file()` fetches a file a script left under the box's output
+    directories, as bytes; `download_file_with_timeout()` sets a limit.
 
   A route an older box does not serve fails with `Error::UnsupportedByBox`.
   The box does not check the box lock on these routes, so hold
