@@ -4,6 +4,16 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- The blocking client (`blocking` feature, on by default) now runs on ureq 3
+  instead of ureq 2, which no longer gets releases. The public API is
+  unchanged. Transport behavior is kept as before: the client still ignores
+  `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` (ureq 3 would otherwise use them),
+  still gives up connecting after 30 seconds, and still reads response
+  bodies of any size. The wording of some timeout messages changes with the
+  new library.
+
 ## [0.11.0] - 2026-11-04
 
 Adds the `admin` feature, so a Rust program can set up a box as the `lager`
