@@ -432,19 +432,27 @@ impl GatewayAuth {
 
 #[cfg(feature = "blocking")]
 fn refresh_blocking(auth_url: &str, cookies: &Map<String, Value>) -> Option<RefreshOutcome> {
-    let req = ureq::post(&format!("{auth_url}/api/auth/refresh"))
-        .timeout(AUTH_SERVER_TIMEOUT)
-        .set("Cookie", &cookie_header(cookies));
-    let resp = match req.call() {
-        Ok(resp) => resp,
-        Err(_) => return None,
-    };
+    let agent = crate::client::http_agent();
+    let request = ureq::http::Request::post(format!("{auth_url}/api/auth/refresh"))
+        .header("Cookie", cookie_header(cookies))
+        .body(())
+        .ok()?;
+    let request = agent
+        .configure_request(request)
+        .timeout_global(Some(AUTH_SERVER_TIMEOUT))
+        .build();
+    let resp = agent.run(request).ok()?;
+    if resp.status().as_u16() >= 400 {
+        return None;
+    }
     let set_cookies = resp
-        .all("set-cookie")
-        .into_iter()
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
         .filter_map(parse_set_cookie)
         .collect();
-    let body: Value = resp.into_json().ok()?;
+    let body: Value = serde_json::from_reader(resp.into_body().into_reader()).ok()?;
     let access_token = body.get("accessToken")?.as_str()?.to_string();
     Some(RefreshOutcome {
         access_token,

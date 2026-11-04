@@ -118,7 +118,7 @@ impl LagerBoxBuilder {
         Ok(LagerBox {
             base,
             debug_base,
-            agent: ureq::AgentBuilder::new().build(),
+            agent: http_agent(),
             default_timeout: self.default_timeout,
             auth,
         })
@@ -470,20 +470,16 @@ impl LagerBox {
         req: &HttpRequest,
         token: Option<&str>,
     ) -> Result<(u16, Option<String>, Value)> {
-        let r = self.open(
-            &req.method,
-            &format!("{}{}", base, req.path),
-            &req.timeout,
-            token,
-        );
-        let outcome = match (&req.method, &req.body) {
-            (Method::Post | Method::Put, Some(body)) => r.send_json(body.clone()),
-            _ => r.call(),
+        let r = self.open(&req.method, &format!("{}{}", base, req.path), token);
+        let resp = match (&req.method, &req.body) {
+            (Method::Post | Method::Put, Some(body)) => {
+                self.send(json_request(r, body)?, &req.timeout)?
+            }
+            _ => self.send(empty_request(r)?, &req.timeout)?,
         };
-        let resp = Self::response(outcome)?;
-        let status = resp.status();
+        let status = resp.status().as_u16();
         let gateway = Self::gateway_denial(&resp);
-        let body: Value = match resp.into_json() {
+        let body: Value = match serde_json::from_reader(resp.into_body().into_reader()) {
             Ok(body) => body,
             Err(e) if status < 400 => return Err(Error::Decode(format!("non-JSON response: {e}"))),
             // Error responses (incl. gateway denials) may have no JSON body.
@@ -508,79 +504,72 @@ impl LagerBox {
     ) -> Result<(u16, Option<String>, Vec<u8>)> {
         use std::io::Read;
 
-        let r = self.open(
-            &req.method,
-            &format!("{}{}", self.base, req.path),
-            &req.timeout,
-            token,
-        );
-        let outcome = match &req.body {
-            Some(body) => r
-                .set("Content-Type", &body.content_type)
-                .send_bytes(&body.bytes),
-            None => r.call(),
+        let r = self.open(&req.method, &format!("{}{}", self.base, req.path), token);
+        let resp = match &req.body {
+            Some(body) => {
+                let request = r
+                    .header("Content-Type", &body.content_type)
+                    .body(body.bytes.clone())
+                    .map_err(|e| Error::Connection(e.to_string()))?;
+                self.send(request, &req.timeout)?
+            }
+            None => self.send(empty_request(r)?, &req.timeout)?,
         };
-        let resp = Self::response(outcome)?;
-        let status = resp.status();
+        let status = resp.status().as_u16();
         let gateway = Self::gateway_denial(&resp);
         let mut bytes = Vec::new();
-        resp.into_reader()
+        resp.into_body()
+            .into_reader()
             .read_to_end(&mut bytes)
             .map_err(|e| Error::Connection(format!("reading the response failed: {e}")))?;
         Ok((status, gateway, bytes))
     }
 
-    /// Start a request with the method, timeout policy and credential set.
-    fn open(
-        &self,
-        method: &Method,
-        url: &str,
-        timeout: &Timeout,
-        token: Option<&str>,
-    ) -> ureq::Request {
-        let mut r = match method {
-            Method::Get => self.agent.request("GET", url),
-            Method::Post => self.agent.request("POST", url),
-            Method::Put => self.agent.request("PUT", url),
-            Method::Delete => self.agent.request("DELETE", url),
+    /// Start a request with the method and credential set.
+    fn open(&self, method: &Method, url: &str, token: Option<&str>) -> RequestBuilder {
+        let method = match method {
+            Method::Get => "GET",
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Delete => "DELETE",
         };
-        match timeout {
-            Timeout::Default => r = r.timeout(self.default_timeout),
-            Timeout::After(d) => r = r.timeout(*d),
-            Timeout::Unbounded => {}
+        let r = ureq::http::Request::builder().method(method).uri(url);
+        match token {
+            Some(token) => r.header("Authorization", format!("Bearer {token}")),
+            None => r,
         }
-        if let Some(token) = token {
-            r = r.set("Authorization", &format!("Bearer {token}"));
-        }
-        r
     }
 
-    /// The response, whatever its status: ureq reports 4xx/5xx as
-    /// `Err(Status)`, and the box still sends an error body to surface.
-    fn response(
-        outcome: std::result::Result<ureq::Response, ureq::Error>,
-    ) -> Result<ureq::Response> {
-        match outcome {
-            Ok(resp) => Ok(resp),
-            Err(ureq::Error::Status(_, resp)) => Ok(resp),
-            Err(ureq::Error::Transport(t)) => {
-                let msg = t.to_string();
-                if msg.to_ascii_lowercase().contains("timed out")
-                    || msg.to_ascii_lowercase().contains("timeout")
-                {
-                    Err(Error::Timeout(msg))
-                } else {
-                    Err(Error::Connection(msg))
-                }
-            }
-        }
+    /// Run a request under its timeout policy. Any status, 4xx/5xx
+    /// included, is a response: the box sends an error body to surface.
+    fn send<S: ureq::AsSendBody>(
+        &self,
+        request: ureq::http::Request<S>,
+        timeout: &Timeout,
+    ) -> Result<ureq::http::Response<ureq::Body>> {
+        let timeout = match timeout {
+            Timeout::Default => Some(self.default_timeout),
+            Timeout::After(d) => Some(*d),
+            Timeout::Unbounded => None,
+        };
+        // `timeout_global` bounds the whole exchange, response body
+        // included; the agent's connect timeout applies either way.
+        let request = self
+            .agent
+            .configure_request(request)
+            .timeout_global(timeout)
+            .build();
+        self.agent.run(request).map_err(transport_error)
     }
 
     /// The auth-server URL a gateway denial (401/403/503 with the discovery
     /// header) carries, or `None`.
-    fn gateway_denial(resp: &ureq::Response) -> Option<String> {
-        if auth::is_denial(resp.status()) {
-            resp.header(auth::DISCOVERY_HEADER).map(str::to_string)
+    fn gateway_denial<B>(resp: &ureq::http::Response<B>) -> Option<String> {
+        if auth::is_denial(resp.status().as_u16()) {
+            resp.headers()
+                .get(auth::DISCOVERY_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
         } else {
             None
         }
@@ -639,53 +628,50 @@ impl LagerBox {
         token: Option<&str>,
     ) -> Result<Box<dyn std::io::Read + Send + Sync>> {
         let url = format!("{}{}", self.debug_base, req.path);
-        let mut r = self.agent.request("POST", &url);
-        match req.timeout {
-            Timeout::Default => r = r.timeout(self.default_timeout),
-            Timeout::After(d) => r = r.timeout(d),
-            Timeout::Unbounded => {}
-        }
-        if let Some(token) = token {
-            r = r.set("Authorization", &format!("Bearer {token}"));
-        }
+        let r = self.open(&Method::Post, &url, token);
         let outcome = match &req.body {
-            Some(body) => r.send_json(body.clone()),
-            None => r.call(),
+            Some(body) => self.send(json_request(r, body)?, &req.timeout),
+            None => self.send(empty_request(r)?, &req.timeout),
         };
-        match outcome {
-            Ok(resp) => {
-                // The debug service frames its stream as chunked under an
-                // HTTP/1.0 status line, where ureq leaves the framing in
-                // the body; decode it here. Over HTTP/1.1 ureq already has.
-                let hand_framed = resp.http_version().eq_ignore_ascii_case("HTTP/1.0")
-                    && resp
-                        .header("transfer-encoding")
-                        .is_some_and(|te| te.trim().eq_ignore_ascii_case("chunked"));
-                let reader = resp.into_reader();
-                Ok(if hand_framed {
-                    Box::new(ChunkedReader::new(reader))
-                } else {
-                    reader
-                })
+        // Any failure to get a response here is a connection error, the
+        // stream's timeout included (RTT streams are unbounded).
+        let resp = match outcome {
+            Ok(resp) => resp,
+            Err(Error::Timeout(message) | Error::Connection(message)) => {
+                return Err(Error::Connection(message))
             }
-            Err(ureq::Error::Status(status, resp)) => {
-                if auth::is_denial(status) {
-                    if let Some(auth_url) = resp.header(auth::DISCOVERY_HEADER) {
-                        let auth_url = auth_url.to_string();
-                        self.auth.learn_auth_server(&auth_url);
-                        return Err(auth::denial_error(
-                            status,
-                            self.auth.box_host(),
-                            &auth_url,
-                            token.is_some(),
-                        ));
-                    }
-                }
-                let body: Value = resp.into_json().unwrap_or(Value::Null);
-                Err(wire::parse_debug(status, body).unwrap_err())
+            Err(other) => return Err(other),
+        };
+        let status = resp.status().as_u16();
+        if status >= 400 {
+            if let Some(auth_url) = Self::gateway_denial(&resp) {
+                self.auth.learn_auth_server(&auth_url);
+                return Err(auth::denial_error(
+                    status,
+                    self.auth.box_host(),
+                    &auth_url,
+                    token.is_some(),
+                ));
             }
-            Err(ureq::Error::Transport(t)) => Err(Error::Connection(t.to_string())),
+            let body: Value =
+                serde_json::from_reader(resp.into_body().into_reader()).unwrap_or(Value::Null);
+            return Err(wire::parse_debug(status, body).unwrap_err());
         }
+        // The debug service frames its stream as chunked under an HTTP/1.0
+        // status line, where ureq leaves the framing in the body; decode it
+        // here. Over HTTP/1.1 ureq already has.
+        let hand_framed = resp.version() == ureq::http::Version::HTTP_10
+            && resp
+                .headers()
+                .get("transfer-encoding")
+                .and_then(|te| te.to_str().ok())
+                .is_some_and(|te| te.trim().eq_ignore_ascii_case("chunked"));
+        let reader = resp.into_body().into_reader();
+        Ok(if hand_framed {
+            Box::new(ChunkedReader::new(reader))
+        } else {
+            Box::new(reader)
+        })
     }
 
     /// Resolve a debug net's full saved record (needed by the debug service,
@@ -1190,6 +1176,56 @@ impl Drop for BoxLockGuard<'_> {
     }
 }
 
+type RequestBuilder = ureq::http::request::Builder;
+
+/// The agent every blocking HTTP request goes through.
+///
+/// The settings keep the behavior this crate has always had, where ureq's
+/// defaults differ from it.
+pub(crate) fn http_agent() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        // A 4xx/5xx is a response, not an error: the box's error body is
+        // what gets surfaced.
+        .http_status_as_error(false)
+        // Talk to the box directly. A bench machine's *_PROXY variables
+        // are for internet traffic, not the box on the LAN.
+        .proxy(None)
+        // Bounded even for calls with no overall timeout (RTT streams,
+        // unbounded downloads), so an unreachable host cannot hang forever.
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .max_redirects(5)
+        .build();
+    ureq::Agent::new_with_config(config)
+}
+
+/// Finish a request with a JSON body.
+fn json_request(r: RequestBuilder, body: &Value) -> Result<ureq::http::Request<Vec<u8>>> {
+    let bytes = serde_json::to_vec(body).map_err(|e| Error::Decode(e.to_string()))?;
+    r.header("Content-Type", "application/json")
+        .body(bytes)
+        .map_err(|e| Error::Connection(e.to_string()))
+}
+
+/// Finish a request with no body.
+fn empty_request(r: RequestBuilder) -> Result<ureq::http::Request<()>> {
+    r.body(()).map_err(|e| Error::Connection(e.to_string()))
+}
+
+/// A failure to get a response: a timeout when ureq says so, otherwise a
+/// connection error.
+fn transport_error(e: ureq::Error) -> Error {
+    let message = e.to_string();
+    let lower = message.to_ascii_lowercase();
+    if matches!(e, ureq::Error::Timeout(_))
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+    {
+        Error::Timeout(message)
+    } else {
+        Error::Connection(message)
+    }
+}
+
 /// TCP connect with a timeout, trying every address the host resolves to.
 pub(crate) fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<std::net::TcpStream> {
     use std::net::ToSocketAddrs;
@@ -1209,4 +1245,22 @@ pub(crate) fn connect_tcp(host: &str, port: u16, timeout: Duration) -> Result<st
         Some(e) => crate::tunnel::io_error(&context, e),
         None => Error::Connection(format!("{context}: no address")),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_agent_keeps_the_crate_transport_defaults() {
+        let agent = http_agent();
+        let config = agent.config();
+        assert!(!config.http_status_as_error());
+        assert!(config.proxy().is_none());
+        assert_eq!(config.max_redirects(), 5);
+        let timeouts = config.timeouts();
+        assert_eq!(timeouts.connect, Some(Duration::from_secs(30)));
+        // Per-request budgets set the overall timeout; the agent has none.
+        assert_eq!(timeouts.global, None);
+    }
 }
