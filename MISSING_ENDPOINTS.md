@@ -33,11 +33,9 @@ capability flag, so an older box answers `Error::UnsupportedByBox`.
 
 ## Planned: the box serves it, the crate does not wrap it yet
 
-The rest of box administration, to come behind the `admin` feature:
-custom-device assignment (`/custom-devices`) and `/diagnose/*`.
-
-Until then, `LagerBox::bearer_token()` returns the token to attach to a raw
-HTTP call against any of these.
+Nothing. Every route on port 9000 that a test or a setup script needs is
+wrapped, or listed below as not planned. `LagerBox::bearer_token()` returns
+the token to attach to a raw HTTP call against any other.
 
 ## Not planned
 
@@ -108,4 +106,4 @@ HTTP call against any of these.
   multimeters).
 - Crate (unreleased), feature `admin`: saved-net create, rename and delete,
   net and box metadata, `/instruments/list`, `/bench`, custom drivers,
-  `/binaries` and `/download-file`.
+  `/binaries`, `/download-file`, custom-device assignment and `/diagnose/*`.

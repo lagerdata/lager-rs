@@ -89,7 +89,8 @@
 //!   [`nets::scope_trace`]).
 //! - `admin`: box setup and management through `LagerBox::admin()`: saved
 //!   nets, net and box metadata, the instrument list, the bench manifest,
-//!   custom drivers, binaries and file download (see the `admin` module).
+//!   custom drivers, binaries, file download, custom-device assignment and
+//!   diagnostics (see the `admin` module).
 //!
 //! # Not yet on the HTTP API
 //!
@@ -125,8 +126,10 @@ pub use admin::Admin;
 pub use admin::AsyncAdmin;
 #[cfg(feature = "admin")]
 pub use admin::{
-    BenchManifest, BinaryAdded, BinaryEntry, BinaryList, BoxMetadata, DriverDeps, DriverEntry,
-    DriverInstall, DriverRemoval, Instrument, NetMetadata, NetMetadataFields, NetMetadataUpdate,
+    BenchManifest, BinaryAdded, BinaryEntry, BinaryList, BoxMetadata, CableId, CatalogDevice,
+    CustomDevices, DeviceAssigned, DeviceAssignment, DeviceRemoval, DriverDeps, DriverEntry,
+    DriverInstall, DriverRemoval, Instrument, JlinkDiagnosis, NetMetadata, NetMetadataFields,
+    NetMetadataUpdate, SerialCable, UsbDiagnosis, UsbHubDiagnosis, VisaDiagnosis,
 };
 
 /// Environment variable read by `from_env` constructors (`LAGER_BOX_HOST`).
