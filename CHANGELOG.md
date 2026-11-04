@@ -4,6 +4,13 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-04
+
+Adds the `admin` feature, so a Rust program can set up a box as the `lager`
+CLI does. It also fixes how the crate recognizes a route an older box does
+not serve: such a call now fails with `Error::UnsupportedByBox`, as
+documented, instead of a generic 404.
+
 ### Added
 
 - **The `admin` feature** adds `LagerBox::admin()` (and `AsyncLagerBox::admin()`)

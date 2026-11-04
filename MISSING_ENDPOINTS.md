@@ -104,6 +104,6 @@ the token to attach to a raw HTTP call against any other.
   `disconnect`, BLE GATT read/write/notify/pair, BluFi op mode and custom
   data, `transport` on debug `connect`, and the new `dmm` role (bench
   multimeters).
-- Crate (unreleased), feature `admin`: saved-net create, rename and delete,
+- Crate 0.11, feature `admin`: saved-net create, rename and delete,
   net and box metadata, `/instruments/list`, `/bench`, custom drivers,
   `/binaries`, `/download-file`, custom-device assignment and `/diagnose/*`.
