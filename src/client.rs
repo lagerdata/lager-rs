@@ -479,7 +479,20 @@ impl LagerBox {
         };
         let status = resp.status().as_u16();
         let gateway = Self::gateway_denial(&resp);
-        let body: Value = match serde_json::from_reader(resp.into_body().into_reader()) {
+        // Read the whole body before parsing it, so a read that times out
+        // is reported as a timeout rather than as malformed JSON.
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        let parsed = match resp.into_body().into_reader().read_to_end(&mut bytes) {
+            Ok(_) => serde_json::from_slice::<Value>(&bytes).map_err(|e| e.to_string()),
+            Err(e) if is_timeout(&e) => {
+                return Err(Error::Timeout(format!(
+                    "reading the response timed out: {e}"
+                )))
+            }
+            Err(e) => Err(e.to_string()),
+        };
+        let body: Value = match parsed {
             Ok(body) => body,
             Err(e) if status < 400 => return Err(Error::Decode(format!("non-JSON response: {e}"))),
             // Error responses (incl. gateway denials) may have no JSON body.
@@ -1224,6 +1237,18 @@ fn transport_error(e: ureq::Error) -> Error {
     } else {
         Error::Connection(message)
     }
+}
+
+/// Whether a body read failed because a timeout ran out. ureq reports its
+/// own timeouts as an `io::Error` wrapping `ureq::Error::Timeout`.
+fn is_timeout(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) || e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<ureq::Error>())
+        .is_some_and(|inner| matches!(inner, ureq::Error::Timeout(_)))
 }
 
 /// TCP connect with a timeout, trying every address the host resolves to.

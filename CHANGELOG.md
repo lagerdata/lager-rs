@@ -14,6 +14,13 @@ All notable changes to the `lager-net` crate are documented here.
   bodies of any size. The wording of some timeout messages changes with the
   new library.
 
+### Fixed
+
+- On the blocking client, a response whose headers arrive but whose JSON
+  body stalls past the call's timeout now fails with `Error::Timeout`, as it
+  already did on the async client. It used to fail with `Error::Decode`
+  ("non-JSON response"), which read as if the box had sent malformed JSON.
+
 ## [0.11.0] - 2026-11-04
 
 Adds the `admin` feature, so a Rust program can set up a box as the `lager`
