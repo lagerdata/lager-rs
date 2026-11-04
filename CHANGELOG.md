@@ -4,6 +4,13 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-04
+
+Moves the blocking client to ureq 3, with no change to the public API. One
+behavior change: on the blocking client, a JSON response body that stalls past
+the call's timeout is now `Error::Timeout` instead of `Error::Decode`. Code that
+matched `Error::Decode` to detect a slow box should match `Error::Timeout`.
+
 ### Changed
 
 - The blocking client (`blocking` feature, on by default) now runs on ureq 3

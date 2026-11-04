@@ -23,7 +23,7 @@ box's debug service on port 8765.
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.11" }
+lager = { package = "lager-net", version = "0.12" }
 ```
 
 ```rust
@@ -162,7 +162,7 @@ Both clients execute the exact same request builders and response parsers
 (the `wire` module), so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.11", features = ["async"] }
+lager = { package = "lager-net", version = "0.12", features = ["async"] }
 ```
 
 The streams work on both clients too: `AsyncDebugNet::rtt()` returns a
