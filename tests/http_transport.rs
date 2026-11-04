@@ -161,11 +161,9 @@ fn no_answer_within_the_default_timeout_is_a_timeout() {
 }
 
 #[test]
-fn a_json_body_that_stalls_after_the_headers_is_reported_as_decode() {
-    // The headers arrive in time, the JSON body never finishes. The
-    // blocking client reports the read timeout as a decode failure; the
-    // async client reports `Timeout` for the same case. Pinned as-is so a
-    // change of HTTP library cannot move it silently.
+fn a_json_body_that_stalls_after_the_headers_is_a_timeout() {
+    // The headers arrive in time, the JSON body never finishes: a timeout,
+    // as on the async client, not a decode failure.
     let (url, _) = serve_raw(vec![Reply::then_stall(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: application/json\r\n\
@@ -176,13 +174,8 @@ fn a_json_body_that_stalls_after_the_headers_is_reported_as_decode() {
         .timeout(Duration::from_millis(300))
         .build()
         .unwrap();
-    match lager.adc("adc1").read().unwrap_err() {
-        Error::Decode(message) => {
-            assert!(message.starts_with("non-JSON response"), "{message}");
-            assert!(message.contains("timed out"), "{message}");
-        }
-        other => panic!("expected Error::Decode, got {other:?}"),
-    }
+    let err = lager.adc("adc1").read().unwrap_err();
+    assert!(matches!(err, Error::Timeout(_)), "{err:?}");
 }
 
 #[cfg(feature = "admin")]
