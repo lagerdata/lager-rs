@@ -8,7 +8,9 @@ All notable changes to the `lager-net` crate are documented here.
 
 - **Held BLE GATT sessions** on the box adapter (`Ble::session_open` /
   `AsyncBle::session_open` → `BleSession` / `AsyncBleSession`), with
-  `BleSessionOptions` for the connect and per-operation timeouts. `pair`,
+  `BleSessionOptions` for the connect and per-operation timeouts plus the
+  box-side `max_lifetime` (default 300 s) and `idle_timeout` (default 60 s),
+  so a killed process frees the adapter within `idle_timeout`. `pair`,
   `read`, `write` / `write_with_response`, `notify_start` / `notify_stop`,
   `notify_poll` (optional characteristic filter), and `close`. Both session
   types close best-effort on Drop; the async one does so on a short-lived
@@ -17,6 +19,10 @@ All notable changes to the `lager-net` crate are documented here.
   one). Requires box software matching `SESSION_SINCE` (`>= 0.63.0` until
   Lager lands the box bump); older boxes fail with `Error::UnsupportedByBox`.
   `BoxCapabilities::ble_session` reports whether a box serves sessions.
+  `notify_poll` returns as soon as one message is available; messages carry
+  the box's per-characteristic `seq` and receive `timestamp`, and
+  `BleSessionNotifications::ended` gives the reason a session ended without a
+  client close.
   One-shot GATT methods are unchanged.
 
 ## [0.12.0] - 2026-11-04
