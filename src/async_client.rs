@@ -150,6 +150,18 @@ impl AsyncLagerBox {
         &self.base
     }
 
+    /// A copy with its own connection pool, for work that outlives the
+    /// caller's runtime (a pool is bound to the runtime that built it).
+    pub(crate) fn detached(&self) -> AsyncLagerBox {
+        AsyncLagerBox {
+            base: self.base.clone(),
+            debug_base: self.debug_base.clone(),
+            http: reqwest::Client::new(),
+            default_timeout: self.default_timeout,
+            auth: self.auth.snapshot(),
+        }
+    }
+
     // -- raw access --------------------------------------------------------
 
     /// Async twin of [`LagerBox::debug_tunnel`](crate::LagerBox::debug_tunnel):
