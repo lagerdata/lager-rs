@@ -78,24 +78,35 @@ impl GattChar {
 }
 
 /// One notification drained by [`BleSession::notify_poll`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct BleSessionMessage {
     /// Characteristic the notification came from (UUID or handle).
     pub characteristic: GattChar,
     /// Notification payload.
     pub data: Vec<u8>,
+    /// Per-characteristic sequence number, starting at 1 after `notify_start`.
+    /// A gap means the box's bounded buffer discarded notifications.
+    pub seq: u64,
+    /// Box receive time (box clock, Unix seconds). Compare deltas, not
+    /// against the host clock.
+    pub timestamp: f64,
 }
 
 /// Notifications collected by [`BleSession::notify_poll`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct BleSessionNotifications {
     /// Messages drained this poll, in round-robin order across characteristics
     /// when no char filter was set.
     pub messages: Vec<BleSessionMessage>,
-    /// `true` when the wait ended before `max_messages` arrived.
+    /// `true` when the wait expired with no messages.
     pub timed_out: bool,
+    /// Why the session ended, if it did other than by [`BleSession::close`]
+    /// (peer disconnected, lifetime expired, idle timeout). The box keeps the
+    /// remaining notifications briefly: poll until it fails with HTTP 400 to
+    /// drain them.
+    pub ended: Option<String>,
 }
 
 /// Timeouts for a held [`BleSession`].
@@ -106,6 +117,13 @@ pub struct BleSessionOptions {
     /// Box-side timeout for each pair/read/write/notify_start/notify_stop on
     /// the held link, seconds (default 10).
     pub op_timeout: f64,
+    /// Box-side cap on total session lifetime, seconds (default 300; the box
+    /// accepts 5..=1800).
+    pub max_lifetime: f64,
+    /// The box ends the session after this many seconds with no session
+    /// request in flight or received, seconds (default 60; the box accepts
+    /// 5..=`max_lifetime`). Bounds how long a killed process holds the adapter.
+    pub idle_timeout: f64,
 }
 
 impl Default for BleSessionOptions {
@@ -113,6 +131,8 @@ impl Default for BleSessionOptions {
         BleSessionOptions {
             connect_timeout: 10.0,
             op_timeout: 10.0,
+            max_lifetime: 300.0,
+            idle_timeout: 60.0,
         }
     }
 }
@@ -124,7 +144,9 @@ pub(crate) mod ops {
 
     use serde::Deserialize;
 
-    use super::{BleSessionMessage, BleSessionNotifications, GattChar, SESSION_SINCE};
+    use super::{
+        BleSessionMessage, BleSessionNotifications, BleSessionOptions, GattChar, SESSION_SINCE,
+    };
     use crate::error::Result;
     use crate::wire::{
         box_command, hex_decode, hex_encode, unit, value_as, value_list_field, BleDevice,
@@ -336,13 +358,18 @@ pub(crate) mod ops {
         json!({ "session_id": session_id, "timeout": op_timeout })
     }
 
-    pub(crate) fn session_open(address: &str, connect_timeout: f64) -> Op<SessionOpened> {
+    pub(crate) fn session_open(address: &str, opts: &BleSessionOptions) -> Op<SessionOpened> {
         Op {
             req: box_command(
                 PATH,
                 "session_open",
-                json!({ "address": address, "timeout": connect_timeout }),
-                budget(connect_timeout),
+                json!({
+                    "address": address,
+                    "timeout": opts.connect_timeout,
+                    "max_lifetime": opts.max_lifetime,
+                    "idle_timeout": opts.idle_timeout,
+                }),
+                budget(opts.connect_timeout),
             ),
             parse: value_as::<SessionOpened>,
         }
@@ -459,6 +486,8 @@ pub(crate) mod ops {
         struct WireMsg {
             char: serde_json::Value,
             data: String,
+            n: u64,
+            ts: f64,
         }
         #[derive(Deserialize)]
         struct Polled {
@@ -466,6 +495,7 @@ pub(crate) mod ops {
             messages: Vec<WireMsg>,
             #[serde(default)]
             timed_out: bool,
+            ended: Option<String>,
         }
         let n = value_as::<Polled>(resp)?;
         let mut messages = Vec::with_capacity(n.messages.len());
@@ -473,11 +503,14 @@ pub(crate) mod ops {
             messages.push(BleSessionMessage {
                 characteristic: GattChar::from_json(&m.char)?,
                 data: hex_decode(&m.data)?,
+                seq: m.n,
+                timestamp: m.ts,
             });
         }
         Ok(BleSessionNotifications {
             messages,
             timed_out: n.timed_out,
+            ended: n.ended,
         })
     }
 
@@ -604,8 +637,10 @@ box_handle! {
 impl<'a> Ble<'a> {
     /// Open a held GATT session to `address`.
     ///
-    /// The session owns the box adapter until [`BleSession::close`] or drop
-    /// (max lifetime 300 s on the box). One-shot BLE and BluFi refuse with
+    /// The session owns the box adapter until [`BleSession::close`] or drop,
+    /// or until the box ends it after `opts.idle_timeout` without requests or
+    /// at `opts.max_lifetime`. A killed process therefore frees the adapter
+    /// within `idle_timeout`. One-shot BLE and BluFi refuse with
     /// HTTP 409 while it is open. Requires box software matching
     /// [`SESSION_SINCE`].
     pub fn session_open(
@@ -615,7 +650,7 @@ impl<'a> Ble<'a> {
     ) -> crate::error::Result<BleSession<'a>> {
         let opened = self
             .client
-            .run(ops::session_open(address, opts.connect_timeout))
+            .run(ops::session_open(address, opts))
             .map_err(ops::session_compat)?;
         Ok(BleSession {
             client: self.client,
@@ -648,7 +683,7 @@ impl<'a> AsyncBle<'a> {
     ) -> crate::error::Result<AsyncBleSession<'a>> {
         let opened = self
             .client
-            .run(ops::session_open(address, opts.connect_timeout))
+            .run(ops::session_open(address, opts))
             .await
             .map_err(ops::session_compat)?;
         Ok(AsyncBleSession {
@@ -674,6 +709,9 @@ impl<'a> AsyncBle<'a> {
 ///
 /// Drop closes the session best-effort. Call [`BleSession::close`] to surface
 /// errors. Only one session may be open per box.
+///
+/// The box ends the session after `idle_timeout` without requests or at
+/// `max_lifetime` ([`BleSessionOptions`]); see [`BleSessionNotifications::ended`].
 #[cfg(feature = "blocking")]
 pub struct BleSession<'a> {
     client: &'a crate::client::LagerBox,
@@ -769,10 +807,15 @@ impl BleSession<'_> {
             .map_err(ops::session_compat)
     }
 
-    /// Drain buffered notifications, waiting up to `wait` seconds for more.
-    /// `characteristic` limits the drain to one characteristic; `None` drains
-    /// every active one round-robin. A short count comes back with
-    /// [`BleSessionNotifications::timed_out`] set, not as an error.
+    /// Drain buffered notifications, waiting up to `wait` seconds for the
+    /// first. Returns as soon as at least one message is available;
+    /// `max_messages` is only a cap. `characteristic` limits the drain to one
+    /// characteristic; `None` drains every active one round-robin. An empty
+    /// result after the wait has [`BleSessionNotifications::timed_out`] set,
+    /// not an error. If the session ended on the box, remaining messages come
+    /// back with [`BleSessionNotifications::ended`] set until drained; then
+    /// polls fail with `Error::Box { status: 400, .. }`. A poll in progress counts
+    /// as activity for the idle timeout.
     pub fn notify_poll(
         &self,
         characteristic: Option<GattChar>,

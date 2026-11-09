@@ -15,11 +15,11 @@ fn mock_open<'a>(server: &'a MockServer) -> httpmock::Mock<'a> {
     server.mock(|when, then| {
         when.method(POST).path("/ble/command").json_body(json!({
             "action": "session_open",
-            "params": {"address": ADDR, "timeout": 10.0}
+            "params": {"address": ADDR, "timeout": 10.0, "max_lifetime": 300.0, "idle_timeout": 60.0}
         }));
         then.status(200).json_body(json!({
             "success": true, "action": "session_open",
-            "value": {"session_id": SID, "address": ADDR}
+            "value": {"session_id": SID, "address": ADDR, "max_lifetime": 300.0, "idle_timeout": 60.0}
         }));
     })
 }
@@ -52,7 +52,7 @@ mod blocking {
             when.method(POST).path("/ble/command").body_contains("session_notify_poll");
             then.status(200).json_body(json!({
                 "success": true, "action": "session_notify_poll",
-                "value": {"session_id": SID, "messages": [{"char": char_json, "data": "01"}], "timed_out": false}
+                "value": {"session_id": SID, "messages": [{"char": char_json, "n": 1, "ts": 1.5, "data": "01"}], "timed_out": false, "ended": null}
             }));
         })
     }
@@ -63,12 +63,12 @@ mod blocking {
         let open = server.mock(|when, then| {
             when.method(POST).path("/ble/command").json_body(json!({
                 "action": "session_open",
-                "params": {"address": ADDR, "timeout": 10.0}
+                "params": {"address": ADDR, "timeout": 10.0, "max_lifetime": 300.0, "idle_timeout": 60.0}
             }));
             then.status(200).json_body(json!({
                 "success": true, "action": "session_open",
                 "message": "Opened BLE session",
-                "value": {"session_id": SID, "address": ADDR}
+                "value": {"session_id": SID, "address": ADDR, "max_lifetime": 300.0, "idle_timeout": 60.0}
             }));
         });
         let pair = server.mock(|when, then| {
@@ -112,8 +112,8 @@ mod blocking {
                 "value": {
                     "session_id": SID,
                     "messages": [
-                        {"char": CHAR, "data": "01"},
-                        {"char": CHAR2, "data": "0203"}
+                        {"char": CHAR, "n": 1, "ts": 1700000000.25, "data": "01"},
+                        {"char": CHAR2, "n": 7, "ts": 1700000001.5, "data": "0203"}
                     ],
                     "timed_out": true
                 }
@@ -144,7 +144,12 @@ mod blocking {
         session.notify_start(CHAR).unwrap();
         let n = session.notify_poll(None, 8, 1.5).unwrap();
         assert!(n.timed_out);
+        assert_eq!(n.ended, None);
         assert_eq!(n.messages.len(), 2);
+        assert_eq!(n.messages[0].seq, 1);
+        assert_eq!(n.messages[0].timestamp, 1700000000.25);
+        assert_eq!(n.messages[1].seq, 7);
+        assert_eq!(n.messages[1].timestamp, 1700000001.5);
         assert_eq!(n.messages[0].characteristic, GattChar::Uuid(CHAR.into()));
         assert_eq!(n.messages[0].data, vec![0x01]);
         assert_eq!(n.messages[1].characteristic, GattChar::Uuid(CHAR2.into()));
@@ -165,11 +170,11 @@ mod blocking {
         server.mock(|when, then| {
             when.method(POST).path("/ble/command").json_body(json!({
                 "action": "session_open",
-                "params": {"address": ADDR, "timeout": 10.0}
+                "params": {"address": ADDR, "timeout": 10.0, "max_lifetime": 300.0, "idle_timeout": 60.0}
             }));
             then.status(200).json_body(json!({
                 "success": true, "action": "session_open",
-                "value": {"session_id": SID, "address": ADDR}
+                "value": {"session_id": SID, "address": ADDR, "max_lifetime": 300.0, "idle_timeout": 60.0}
             }));
         });
         let read = server.mock(|when, then| {
@@ -191,7 +196,7 @@ mod blocking {
                 "success": true, "action": "session_notify_poll",
                 "value": {
                     "session_id": SID,
-                    "messages": [{"char": CHAR, "data": "ff"}],
+                    "messages": [{"char": CHAR, "n": 1, "ts": 2.0, "data": "ff"}],
                     "timed_out": false
                 }
             }));
@@ -227,11 +232,11 @@ mod blocking {
         server.mock(|when, then| {
             when.method(POST).path("/ble/command").json_body(json!({
                 "action": "session_open",
-                "params": {"address": ADDR, "timeout": 10.0}
+                "params": {"address": ADDR, "timeout": 10.0, "max_lifetime": 300.0, "idle_timeout": 60.0}
             }));
             then.status(200).json_body(json!({
                 "success": true, "action": "session_open",
-                "value": {"session_id": SID, "address": ADDR}
+                "value": {"session_id": SID, "address": ADDR, "max_lifetime": 300.0, "idle_timeout": 60.0}
             }));
         });
         let close = server.mock(|when, then| {
@@ -332,11 +337,11 @@ mod blocking {
         let open = server.mock(|when, then| {
             when.method(POST).path("/ble/command").json_body(json!({
                 "action": "session_open",
-                "params": {"address": ADDR, "timeout": 3.0}
+                "params": {"address": ADDR, "timeout": 3.0, "max_lifetime": 120.0, "idle_timeout": 15.0}
             }));
             then.status(200).json_body(json!({
                 "success": true, "action": "session_open",
-                "value": {"session_id": SID, "address": ADDR}
+                "value": {"session_id": SID, "address": ADDR, "max_lifetime": 300.0, "idle_timeout": 60.0}
             }));
         });
         mock_close(&server);
@@ -353,6 +358,8 @@ mod blocking {
         let opts = BleSessionOptions {
             connect_timeout: 3.0,
             op_timeout: 25.0,
+            max_lifetime: 120.0,
+            idle_timeout: 15.0,
         };
         let lager = LagerBox::connect(server.address().to_string()).unwrap();
         let session = lager.ble().session_open(ADDR, &opts).unwrap();
@@ -395,6 +402,110 @@ mod blocking {
         session.notify_poll(None, 3, 0.5).unwrap();
         with_char.assert();
         without_char.assert();
+    }
+
+    #[test]
+    fn custom_lifetimes_are_sent_on_open() {
+        let server = MockServer::start();
+        let open = server.mock(|when, then| {
+            when.method(POST).path("/ble/command").json_body(json!({
+                "action": "session_open",
+                "params": {"address": ADDR, "timeout": 10.0, "max_lifetime": 900.0, "idle_timeout": 5.0}
+            }));
+            then.status(200).json_body(json!({
+                "success": true, "action": "session_open",
+                "value": {"session_id": SID, "address": ADDR, "max_lifetime": 900.0, "idle_timeout": 5.0}
+            }));
+        });
+        mock_close(&server);
+        let opts = BleSessionOptions {
+            max_lifetime: 900.0,
+            idle_timeout: 5.0,
+            ..BleSessionOptions::default()
+        };
+        let lager = LagerBox::connect(server.address().to_string()).unwrap();
+        lager.ble().session_open(ADDR, &opts).unwrap();
+        open.assert();
+    }
+
+    fn poll_with_value(server: &MockServer, value: serde_json::Value) {
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/ble/command")
+                .body_contains("session_notify_poll");
+            then.status(200).json_body(json!({
+                "success": true, "action": "session_notify_poll", "value": value
+            }));
+        });
+    }
+
+    #[test]
+    fn poll_reports_why_the_session_ended() {
+        let server = MockServer::start();
+        mock_open(&server);
+        mock_close(&server);
+        poll_with_value(
+            &server,
+            json!({
+                "session_id": SID,
+                "messages": [{"char": CHAR, "n": 4, "ts": 3.0, "data": "09"}],
+                "timed_out": false,
+                "ended": "peer disconnected"
+            }),
+        );
+        let lager = LagerBox::connect(server.address().to_string()).unwrap();
+        let session = lager
+            .ble()
+            .session_open(ADDR, &BleSessionOptions::default())
+            .unwrap();
+        let n = session.notify_poll(None, 8, 0.0).unwrap();
+        assert_eq!(n.ended.as_deref(), Some("peer disconnected"));
+        assert_eq!(n.messages.len(), 1);
+        assert_eq!(n.messages[0].data, vec![0x09]);
+    }
+
+    #[test]
+    fn poll_without_n_or_ts_is_a_decode_error() {
+        for message in [
+            json!({"char": CHAR, "ts": 1.0, "data": "01"}),
+            json!({"char": CHAR, "n": 1, "data": "01"}),
+        ] {
+            let server = MockServer::start();
+            mock_open(&server);
+            mock_close(&server);
+            poll_with_value(
+                &server,
+                json!({
+                    "session_id": SID, "messages": [message], "timed_out": false, "ended": null
+                }),
+            );
+            let lager = LagerBox::connect(server.address().to_string()).unwrap();
+            let session = lager
+                .ble()
+                .session_open(ADDR, &BleSessionOptions::default())
+                .unwrap();
+            let err = session.notify_poll(None, 1, 0.0).unwrap_err();
+            assert!(matches!(err, Error::Decode(_)), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn poll_without_ended_means_live_session() {
+        let server = MockServer::start();
+        mock_open(&server);
+        mock_close(&server);
+        poll_with_value(
+            &server,
+            json!({"session_id": SID, "messages": [], "timed_out": true}),
+        );
+        let lager = LagerBox::connect(server.address().to_string()).unwrap();
+        let session = lager
+            .ble()
+            .session_open(ADDR, &BleSessionOptions::default())
+            .unwrap();
+        let n = session.notify_poll(None, 1, 0.0).unwrap();
+        assert_eq!(n.ended, None);
+        assert!(n.timed_out);
     }
 
     #[test]
@@ -540,8 +651,9 @@ mod async_parity {
                 "success": true, "action": "session_notify_poll",
                 "value": {
                     "session_id": SID,
-                    "messages": [{"char": CHAR, "data": "01"}],
-                    "timed_out": true
+                    "messages": [{"char": CHAR, "n": 1, "ts": 2.0, "data": "01"}],
+                    "timed_out": false,
+                    "ended": null
                 }
             }));
         });
@@ -555,7 +667,10 @@ mod async_parity {
             .unwrap();
         session.notify_start(CHAR).await.unwrap();
         let n = session.notify_poll(None, 8, 1.5).await.unwrap();
-        assert!(n.timed_out);
+        assert!(!n.timed_out);
+        assert_eq!(n.ended, None);
+        assert_eq!(n.messages[0].seq, 1);
+        assert_eq!(n.messages[0].timestamp, 2.0);
         assert_eq!(n.messages[0].characteristic, GattChar::Uuid(CHAR.into()));
         session.close().await.unwrap();
 
