@@ -16,6 +16,7 @@ All notable changes to the `lager-net` crate are documented here.
   whatever session is open (recovery when a previous process died holding
   one). Requires box software matching `SESSION_SINCE` (`>= 0.63.0` until
   Lager lands the box bump); older boxes fail with `Error::UnsupportedByBox`.
+  `BoxCapabilities::ble_session` reports whether a box serves sessions.
   One-shot GATT methods are unchanged.
 
 ## [0.12.0] - 2026-11-04
