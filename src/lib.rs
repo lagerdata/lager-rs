@@ -160,7 +160,13 @@ pub use async_client::{AsyncLagerBox, AsyncLagerBoxBuilder};
 // Net handle types and their vocabularies, re-exported at the crate root
 // for ergonomic imports (`use lager::{LagerBox, Level, EloadMode};`).
 pub use nets::battery::BatteryMode;
-pub use nets::ble::GattChar;
+#[cfg(feature = "async")]
+pub use nets::ble::AsyncBleSession;
+#[cfg(feature = "blocking")]
+pub use nets::ble::BleSession;
+pub use nets::ble::{
+    BleSessionMessage, BleSessionNotifications, BleSessionOptions, GattChar, SESSION_SINCE,
+};
 pub use nets::blufi::BlufiOpMode;
 pub use nets::debug::{
     ConnectOptions, EraseOptions, FirmwareKind, FlashOptions, RttOptions, Transport,

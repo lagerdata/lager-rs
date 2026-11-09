@@ -252,7 +252,7 @@ pub(crate) struct GatewayAuth {
     state: Mutex<State>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct State {
     /// Auth server for this box, from the store or a discovery header.
     auth_url: Option<String>,
@@ -281,6 +281,22 @@ impl GatewayAuth {
                 auth_url,
                 token: None,
             }),
+        }
+    }
+
+    #[cfg(feature = "async")]
+    /// An independent copy carrying the same token and auth-server state.
+    pub(crate) fn snapshot(&self) -> GatewayAuth {
+        GatewayAuth {
+            box_host: self.box_host.clone(),
+            static_token: self.static_token.clone(),
+            // Called from Drop: a poisoned lock must not panic there.
+            state: Mutex::new(
+                self.state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone(),
+            ),
         }
     }
 

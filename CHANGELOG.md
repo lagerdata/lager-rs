@@ -4,6 +4,20 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Held BLE GATT sessions** on the box adapter (`Ble::session_open` /
+  `AsyncBle::session_open` → `BleSession` / `AsyncBleSession`), with
+  `BleSessionOptions` for the connect and per-operation timeouts. `pair`,
+  `read`, `write` / `write_with_response`, `notify_start` / `notify_stop`,
+  `notify_poll` (optional characteristic filter), and `close`. Both session
+  types close best-effort on Drop; the async one does so on a short-lived
+  thread, so prefer `close()` to see errors. `session_force_close` closes
+  whatever session is open (recovery when a previous process died holding
+  one). Requires box software matching `SESSION_SINCE` (`>= 0.63.0` until
+  Lager lands the box bump); older boxes fail with `Error::UnsupportedByBox`.
+  One-shot GATT methods are unchanged.
+
 ## [0.12.0] - 2026-11-04
 
 Moves the blocking client to ureq 3, with no change to the public API. One
