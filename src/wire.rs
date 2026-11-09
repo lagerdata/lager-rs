@@ -1195,6 +1195,11 @@ pub struct BoxCapabilities {
     /// `notify` and `pair` (box >= 0.62.0); see [`crate::Ble::read`].
     #[serde(default, rename = "bleGatt")]
     pub ble_gatt: bool,
+    /// Whether `/ble/command` takes the `session_*` actions; see
+    /// [`crate::Ble::session_open`]. Unlike [`crate::nets::ble::SESSION_SINCE`],
+    /// this is reliable on fork builds whose version predates the feature.
+    #[serde(default, rename = "bleSession")]
+    pub ble_session: bool,
     /// Whether `/blufi/command` takes `set_mode` (box >= 0.62.0); see
     /// [`crate::Blufi::set_mode`].
     #[serde(default, rename = "blufiDeviceMode")]
@@ -2656,6 +2661,14 @@ mod tests {
         assert!(caps.blufi_device_mode && caps.blufi_custom_data);
         let caps: BoxCapabilities = serde_json::from_value(json!({})).unwrap();
         assert!(!caps.eload_input_switch && !caps.ble_gatt && !caps.blufi_custom_data);
+    }
+
+    #[test]
+    fn capabilities_parse_the_ble_session_flag() {
+        let caps: BoxCapabilities = serde_json::from_value(json!({ "bleSession": true })).unwrap();
+        assert!(caps.ble_session);
+        let caps: BoxCapabilities = serde_json::from_value(json!({})).unwrap();
+        assert!(!caps.ble_session);
     }
 
     #[test]
