@@ -12,9 +12,8 @@
 use super::box_handle;
 pub use crate::wire::{BleCharacteristic, BleDevice, BleDeviceInfo, BleNotifications, BleService};
 
-/// Box software that first served `session_*` BLE actions. Coordinate with
-/// Lager on the real bump; until the box lands, older images refuse with
-/// [`crate::Error::UnsupportedByBox`].
+/// Box software that first served `session_*` BLE actions (lager v0.63.0).
+/// Older images refuse with [`crate::Error::UnsupportedByBox`].
 pub const SESSION_SINCE: &str = ">= 0.63.0";
 
 /// A GATT characteristic, by UUID or by attribute handle, for the GATT
