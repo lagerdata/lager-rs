@@ -4,6 +4,10 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-10
+
+Adds held BLE GATT sessions, which need box software 0.63.0 or later.
+
 ### Added
 
 - **Held BLE GATT sessions** on the box adapter (`Ble::session_open` /
@@ -16,8 +20,8 @@ All notable changes to the `lager-net` crate are documented here.
   types close best-effort on Drop; the async one does so on a short-lived
   thread, so prefer `close()` to see errors. `session_force_close` closes
   whatever session is open (recovery when a previous process died holding
-  one). Requires box software matching `SESSION_SINCE` (`>= 0.63.0` until
-  Lager lands the box bump); older boxes fail with `Error::UnsupportedByBox`.
+  one). Requires box software 0.63.0 or later (`SESSION_SINCE`); older boxes
+  fail with `Error::UnsupportedByBox`.
   `BoxCapabilities::ble_session` reports whether a box serves sessions.
   `notify_poll` returns as soon as one message is available; messages carry
   the box's per-characteristic `seq` and receive `timestamp`, and
