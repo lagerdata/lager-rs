@@ -15,6 +15,8 @@ yanked = "deny"
 ignore = [
     # async-std, via httpmock 0.7 (dev-dependency only; never ships to users).
     { id = "RUSTSEC-2025-0052", reason = "dev-only, via httpmock" },
+    # pin-utils, via async-std (same httpmock 0.7 dev-only path).
+    { id = "RUSTSEC-2026-0441", reason = "dev-only, via httpmock -> async-std" },
     # backoff and instant, via rust_socketio 0.6 (`uart`/`rtt` features).
     { id = "RUSTSEC-2025-0012", reason = "via rust_socketio, no maintained release" },
     { id = "RUSTSEC-2024-0384", reason = "via rust_socketio -> backoff" },
