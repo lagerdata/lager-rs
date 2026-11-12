@@ -3,7 +3,7 @@
 //! Runs the exact same request builders and response parsers as the
 //! blocking client — only the transport differs.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -34,6 +34,7 @@ use crate::nets::usb::AsyncUsbPort;
 use crate::nets::watt::AsyncWattMeter;
 use crate::nets::webcam::AsyncWebcam;
 use crate::nets::wifi::AsyncWifi;
+use crate::retry::{self, RetryPolicy, Step};
 use crate::wire::{
     self, BoxLock, BoxStatus, DebugHealth, DebugHealthDetailed, DebugServiceStatus, Health,
     HttpRequest, Method, NetRecord, NetState, Op, SafetyLimits, Timeout, UartSession,
@@ -62,6 +63,7 @@ pub struct AsyncLagerBox {
     http: reqwest::Client,
     default_timeout: Duration,
     auth: GatewayAuth,
+    retry: RetryPolicy,
 }
 
 /// Builder for [`AsyncLagerBox`], for overriding the default timeout, the
@@ -71,6 +73,7 @@ pub struct AsyncLagerBoxBuilder {
     debug_url: Option<String>,
     default_timeout: Duration,
     bearer_token: Option<String>,
+    retry: RetryPolicy,
 }
 
 impl AsyncLagerBoxBuilder {
@@ -102,6 +105,14 @@ impl AsyncLagerBoxBuilder {
         self
     }
 
+    /// How long to ride out a restart of the box service behind a gateway
+    /// (HTTP 502 + `X-Gateway-Error: upstream_unavailable`). Same policy
+    /// and allowlist as the blocking client's `upstream_retry`.
+    pub fn upstream_retry(mut self, policy: RetryPolicy) -> Self {
+        self.retry = policy;
+        self
+    }
+
     /// Build the client.
     pub fn build(self) -> Result<AsyncLagerBox> {
         let base = wire::base_url(&self.host)?;
@@ -116,6 +127,7 @@ impl AsyncLagerBoxBuilder {
             http: reqwest::Client::new(),
             default_timeout: self.default_timeout,
             auth,
+            retry: self.retry,
         })
     }
 }
@@ -142,6 +154,7 @@ impl AsyncLagerBox {
             debug_url: std::env::var(crate::DEBUG_SERVICE_URL_ENV).ok(),
             default_timeout: wire::DEFAULT_TIMEOUT,
             bearer_token: None,
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -159,6 +172,7 @@ impl AsyncLagerBox {
             http: reqwest::Client::new(),
             default_timeout: self.default_timeout,
             auth: self.auth.snapshot(),
+            retry: self.retry,
         }
     }
 
@@ -356,9 +370,9 @@ impl AsyncLagerBox {
     /// credentials (CLI session store, with transparent refresh) and
     /// retrying once. Mirrors the blocking client exactly.
     async fn execute_at(&self, base: &str, req: &HttpRequest) -> Result<(u16, Value)> {
-        self.with_gateway_auth(
-            |token| async move { self.send_once(base, req, token.as_deref()).await },
-        )
+        self.with_gateway_auth(|token| async move {
+            self.send_retrying(base, req, token.as_deref()).await
+        })
         .await
     }
 
@@ -429,9 +443,32 @@ impl AsyncLagerBox {
         None
     }
 
+    /// [`Self::send_once`], riding out a box-service restart behind the
+    /// gateway for requests that are safe to repeat.
+    async fn send_retrying(
+        &self,
+        base: &str,
+        req: &HttpRequest,
+        token: Option<&str>,
+    ) -> Result<(u16, Option<String>, Value)> {
+        let started = Instant::now();
+        let mut attempt = 1;
+        loop {
+            let outcome = self.send_once(base, req, token).await;
+            match retry::step(&self.retry, req, attempt, started.elapsed(), outcome) {
+                Step::Return(result) => return result,
+                Step::Retry(delay) => {
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
     /// One HTTP round-trip. Returns `(status, gateway_denial_auth_url,
     /// body)`; the auth URL is `Some` only for a gateway denial (401/403/
-    /// 503 carrying the discovery header).
+    /// 503 carrying the discovery header). A gateway's 502
+    /// `upstream_unavailable` is [`Error::BoxServiceUnavailable`].
     async fn send_once(
         &self,
         base: &str,
@@ -449,6 +486,17 @@ impl AsyncLagerBox {
         }
         let resp = r.send().await.map_err(transport_error)?;
         let status = resp.status().as_u16();
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        if retry::is_upstream_unavailable(status, header(retry::GATEWAY_ERROR_HEADER).as_deref()) {
+            let upstream = header(retry::GATEWAY_UPSTREAM_HEADER);
+            let body = resp.text().await.unwrap_or_default();
+            return Err(retry::upstream_error(self.auth.box_host(), upstream, &body));
+        }
         let gateway = gateway_denial(&resp);
         let body: Value = match resp.json().await {
             Ok(body) => body,

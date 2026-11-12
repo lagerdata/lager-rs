@@ -98,6 +98,27 @@ pub enum Error {
         /// What happened (no credential vs. rejected credential).
         message: String,
     },
+    /// The box's gateway is up but the Lager service behind it is not
+    /// answering (HTTP 502 + `X-Gateway-Error: upstream_unavailable`),
+    /// typically because the box server is restarting. Safe-to-repeat
+    /// requests ([`crate::is_retry_safe`]) were retried for the
+    /// [`crate::RetryPolicy`] budget first; others were sent once. The
+    /// gateway's own message is the [`std::error::Error::source`].
+    BoxServiceUnavailable {
+        /// Hostname of the box.
+        box_host: String,
+        /// The upstream the gateway could not reach (`X-Gateway-Upstream`,
+        /// e.g. `lager:9000`), when it said.
+        upstream: Option<String>,
+        /// Requests sent, including the first.
+        attempts: u32,
+        /// Time from the first attempt to giving up.
+        elapsed: std::time::Duration,
+        /// Whether the request was eligible for retry.
+        retry_safe: bool,
+        /// The gateway's response, as [`Error::Box`] with status 502.
+        cause: Box<Error>,
+    },
     /// Client-side configuration problem (bad host string, missing env var).
     Config(String),
     /// A streaming session (UART) reported an error, e.g. the device
@@ -178,6 +199,33 @@ impl fmt::Display for Error {
                  CLI's session), or set LAGER_GATEWAY_TOKEN / use \
                  LagerBoxBuilder::bearer_token"
             ),
+            Error::BoxServiceUnavailable {
+                box_host,
+                upstream,
+                attempts,
+                elapsed,
+                retry_safe,
+                ..
+            } => {
+                let upstream = upstream
+                    .as_deref()
+                    .map(|u| format!(" ({u})"))
+                    .unwrap_or_default();
+                write!(
+                    f,
+                    "the Lager service on box {box_host}{upstream} is not answering; it may be restarting"
+                )?;
+                if *attempts > 1 {
+                    write!(
+                        f,
+                        " (gave up after {attempts} attempts over {:.1}s)",
+                        elapsed.as_secs_f64()
+                    )?;
+                } else if !retry_safe {
+                    write!(f, " (not retried: this operation is not safe to repeat)")?;
+                }
+                write!(f, ". If this persists, check the box or run `lager update`")
+            }
             Error::Config(msg) => write!(f, "configuration error: {msg}"),
             Error::Stream(msg) => write!(f, "streaming session error: {msg}"),
             Error::UartInUse { message, .. } => write!(f, "UART in use: {message}"),
@@ -185,7 +233,14 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::BoxServiceUnavailable { cause, .. } => Some(cause.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
