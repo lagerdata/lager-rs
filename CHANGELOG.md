@@ -4,6 +4,23 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ride out a box-service restart behind a gateway.** When the box HTTP
+  server restarts (its supervisor respawns it on a wedged USB context, about
+  4 s down), the gateway answers HTTP 502 with `X-Gateway-Error:
+  upstream_unavailable`, and calls failed with "box error (HTTP 502)".
+  Requests that are safe to repeat (`lager::is_retry_safe`: GETs, USB port
+  enable/disable/state, absolute setpoints and reads) are now retried with a
+  1 s/2 s/3 s backoff for up to 9 s, logged at `warn` through `log`.
+  Configure it with `upstream_retry(RetryPolicy { .. })` on either builder,
+  or turn it off with `RetryPolicy::disabled()`. Exhausted retries and
+  requests that are not safe to repeat fail with the new
+  `Error::BoxServiceUnavailable`, which says the service may be restarting
+  and suggests `lager update`; the gateway's body is its `source()`. A 502
+  without the header is unchanged. Admin raw-body calls and streaming
+  sessions are not retried.
+
 ## [0.13.0] - 2026-11-10
 
 Adds held BLE GATT sessions, which need box software 0.63.0 or later.

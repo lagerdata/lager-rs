@@ -1,6 +1,6 @@
 //! Blocking client for the Lager box HTTP API (default feature).
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -32,6 +32,7 @@ use crate::nets::usb::UsbPort;
 use crate::nets::watt::WattMeter;
 use crate::nets::webcam::Webcam;
 use crate::nets::wifi::Wifi;
+use crate::retry::{self, RetryPolicy, Step};
 use crate::wire::{
     self, BoxLock, BoxStatus, DebugHealth, DebugHealthDetailed, DebugServiceStatus, Health,
     HttpRequest, Method, NetRecord, NetState, Op, SafetyLimits, Timeout, UartSession,
@@ -64,6 +65,7 @@ pub struct LagerBox {
     agent: ureq::Agent,
     default_timeout: Duration,
     auth: GatewayAuth,
+    retry: RetryPolicy,
 }
 
 /// Builder for [`LagerBox`], for overriding the default timeout, the
@@ -73,6 +75,7 @@ pub struct LagerBoxBuilder {
     debug_url: Option<String>,
     default_timeout: Duration,
     bearer_token: Option<String>,
+    retry: RetryPolicy,
 }
 
 impl LagerBoxBuilder {
@@ -107,6 +110,17 @@ impl LagerBoxBuilder {
         self
     }
 
+    /// How long to ride out a restart of the box service behind a gateway
+    /// (HTTP 502 + `X-Gateway-Error: upstream_unavailable`). Default: retry
+    /// safe-to-repeat requests with a 1s/2s/3s... backoff for up to 9s;
+    /// [`RetryPolicy::disabled`] fails on the first such response. Requests
+    /// that are not safe to repeat ([`crate::is_retry_safe`]) are never
+    /// retried.
+    pub fn upstream_retry(mut self, policy: RetryPolicy) -> Self {
+        self.retry = policy;
+        self
+    }
+
     /// Build the client.
     pub fn build(self) -> Result<LagerBox> {
         let base = wire::base_url(&self.host)?;
@@ -121,6 +135,7 @@ impl LagerBoxBuilder {
             agent: http_agent(),
             default_timeout: self.default_timeout,
             auth,
+            retry: self.retry,
         })
     }
 }
@@ -147,6 +162,7 @@ impl LagerBox {
             debug_url: std::env::var(crate::DEBUG_SERVICE_URL_ENV).ok(),
             default_timeout: wire::DEFAULT_TIMEOUT,
             bearer_token: None,
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -394,7 +410,7 @@ impl LagerBox {
     /// handles a gateway denial by resolving credentials (CLI session
     /// store, with transparent refresh) and retrying once.
     fn execute_at(&self, base: &str, req: &HttpRequest) -> Result<(u16, Value)> {
-        self.with_gateway_auth(|token| self.send_once(base, req, token))
+        self.with_gateway_auth(|token| self.send_retrying(base, req, token))
     }
 
     /// Send one request with a raw body (or none) and return `(status, raw
@@ -461,9 +477,32 @@ impl LagerBox {
         None
     }
 
+    /// [`Self::send_once`], riding out a box-service restart behind the
+    /// gateway for requests that are safe to repeat.
+    fn send_retrying(
+        &self,
+        base: &str,
+        req: &HttpRequest,
+        token: Option<&str>,
+    ) -> Result<(u16, Option<String>, Value)> {
+        let started = Instant::now();
+        let mut attempt = 1;
+        loop {
+            let outcome = self.send_once(base, req, token);
+            match retry::step(&self.retry, req, attempt, started.elapsed(), outcome) {
+                Step::Return(result) => return result,
+                Step::Retry(delay) => {
+                    std::thread::sleep(delay);
+                    attempt += 1;
+                }
+            }
+        }
+    }
+
     /// One HTTP round-trip. Returns `(status, gateway_denial_auth_url,
     /// body)`; the auth URL is `Some` only for a gateway denial (401/403/
-    /// 503 carrying the discovery header).
+    /// 503 carrying the discovery header). A gateway's 502
+    /// `upstream_unavailable` is [`Error::BoxServiceUnavailable`].
     fn send_once(
         &self,
         base: &str,
@@ -478,6 +517,18 @@ impl LagerBox {
             _ => self.send(empty_request(r)?, &req.timeout)?,
         };
         let status = resp.status().as_u16();
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        if retry::is_upstream_unavailable(status, header(retry::GATEWAY_ERROR_HEADER).as_deref()) {
+            let upstream = header(retry::GATEWAY_UPSTREAM_HEADER);
+            let mut body = String::new();
+            let _ = std::io::Read::read_to_string(&mut resp.into_body().into_reader(), &mut body);
+            return Err(retry::upstream_error(self.auth.box_host(), upstream, &body));
+        }
         let gateway = Self::gateway_denial(&resp);
         // Read the whole body before parsing it, so a read that times out
         // is reported as a timeout rather than as malformed JSON.

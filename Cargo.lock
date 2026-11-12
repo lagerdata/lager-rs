@@ -1178,6 +1178,7 @@ name = "lager-net"
 version = "0.13.0"
 dependencies = [
  "httpmock",
+ "log",
  "reqwest 0.13.5",
  "rust_socketio",
  "serde",

@@ -72,6 +72,20 @@
 //! typed API does not cover yet, [`LagerBox::bearer_token`] returns the
 //! token to attach.
 //!
+//! # Box service restarts
+//!
+//! The box HTTP server restarts itself (via its supervisor) when it detects
+//! a wedged USB context; the port is down for a few seconds. A gateway in
+//! front of the box answers that window with HTTP 502 and
+//! `X-Gateway-Error: upstream_unavailable`. Requests that are safe to
+//! repeat ([`is_retry_safe`]: reads, USB port enable/disable/state,
+//! absolute setpoints, `/lock` GET, net listing, status) are retried with a
+//! 1s/2s/3s backoff for up to 9s ([`RetryPolicy`], configurable via
+//! [`LagerBoxBuilder::upstream_retry`]); each retry is logged at `warn`
+//! through the `log` facade. Other requests, and exhausted retries, fail
+//! with [`Error::BoxServiceUnavailable`]. A 502 without that header is not
+//! retried and surfaces as [`Error::Box`] as before.
+//!
 //! # Features
 //!
 //! - `blocking` *(default)*: the [`LagerBox`] client on `ureq` — no tokio
@@ -109,6 +123,7 @@ mod auth;
 mod chunked;
 mod error;
 pub mod nets;
+mod retry;
 #[cfg(any(feature = "blocking", feature = "async"))]
 mod tunnel;
 pub mod wire;
@@ -119,6 +134,7 @@ mod async_client;
 mod client;
 
 pub use error::{Error, Result};
+pub use retry::{is_retry_safe, RetryPolicy};
 
 #[cfg(all(feature = "admin", feature = "blocking"))]
 pub use admin::Admin;
