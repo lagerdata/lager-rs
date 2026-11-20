@@ -21,6 +21,10 @@ All notable changes to the `lager-net` crate are documented here.
   without the header is unchanged. Admin raw-body calls and streaming
   sessions are not retried.
 
+- **The `admin` docs name the right CLI command.** The module docs and
+  `BenchManifest` called the CLI equivalent `lager box bench export`; the
+  command is `lager bench export`.
+
 ## [0.13.0] - 2026-11-10
 
 Adds held BLE GATT sessions, which need box software 0.63.0 or later.
@@ -81,7 +85,7 @@ documented, instead of a generic 404.
 
 - **The `admin` feature** adds `LagerBox::admin()` (and `AsyncLagerBox::admin()`)
   for setting up a box from Rust, as `lager nets`, `lager instruments` and
-  `lager box bench export` do:
+  `lager bench export` do:
   - `save_net()`, `rename_net()`, `delete_net()` and `delete_all_nets()`
     change the box's saved nets. `NetRecord::new(name, role, instrument)` and
     its builder methods make a record, and a record read with `nets()` can be

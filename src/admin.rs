@@ -4,7 +4,7 @@
 //! download files scripts leave on the box, assign USB-serial cables to
 //! custom devices, and run the box's diagnostics. These are the calls behind
 //! `lager nets add`, `lager nets delete`, `lager nets assign`, `lager
-//! instruments`, `lager box bench export`, `lager drivers`, `lager binaries`
+//! instruments`, `lager bench export`, `lager drivers`, `lager binaries`
 //! and `lager diagnose`.
 //!
 //! ```no_run
@@ -204,7 +204,7 @@ pub struct Instrument {
 }
 
 /// The bench manifest (`GET /bench`, box >= 0.50.0): the box's whole
-/// configuration as one document, what `lager box bench export` writes.
+/// configuration as one document, what `lager bench export` writes.
 /// The schema belongs to the box, so it is kept as JSON.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
