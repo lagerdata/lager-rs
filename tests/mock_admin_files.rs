@@ -428,6 +428,61 @@ mod async_parity {
         assert_eq!(bytes, ELF);
     }
 
+    /// Answer one connection with `head`, then hold it open for `hold`
+    /// without writing more (or close it at once when `hold` is zero).
+    fn serve_once(head: &'static [u8], hold: std::time::Duration) -> String {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                line.clear();
+            }
+            let _ = stream.write_all(head);
+            let _ = stream.flush();
+            std::thread::sleep(hold);
+        });
+        format!("http://{addr}")
+    }
+
+    const PARTIAL: &[u8] = b"HTTP/1.1 200 OK\r\n\
+        Content-Type: application/octet-stream\r\n\
+        Content-Length: 100\r\n\r\n\x7fELF";
+
+    #[tokio::test]
+    async fn async_a_raw_body_that_stalls_after_the_headers_is_a_timeout() {
+        // The blocking client's `a_raw_body_that_stalls_after_the_headers_is_a_timeout`.
+        let url = serve_once(PARTIAL, std::time::Duration::from_secs(3));
+        let lager = AsyncLagerBox::connect(url).unwrap();
+        let err = lager
+            .admin()
+            .download_file_with_timeout(
+                "/tmp/lager-output/x",
+                Some(std::time::Duration::from_millis(300)),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Timeout(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn async_a_raw_body_cut_short_is_a_connection_error() {
+        let url = serve_once(PARTIAL, std::time::Duration::ZERO);
+        let lager = AsyncLagerBox::connect(url).unwrap();
+        let err = lager
+            .admin()
+            .download_file_with_timeout(
+                "/tmp/lager-output/x",
+                Some(std::time::Duration::from_secs(5)),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Connection(_)), "{err:?}");
+    }
+
     #[tokio::test]
     async fn async_drivers_on_a_box_without_them_is_unsupported() {
         let server = MockServer::start_async().await;

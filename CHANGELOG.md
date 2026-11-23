@@ -22,6 +22,17 @@ All notable changes to the `lager-net` crate are documented here.
   `capture` do not need the `admin` feature. Not yet run against a real
   sniffer dongle.
 
+### Changed
+
+- **A raw download that stalls past its timeout is `Error::Timeout`.** On
+  the blocking client, a body that stopped arriving after the headers
+  (`Admin::download_file_with_timeout`, `BleSniffer::download`) failed as
+  `Error::Connection("reading the response failed: ...")`; it is now
+  `Error::Timeout("reading the response timed out: ...")`, as on the JSON
+  path since 0.12.0 and on the async client. Code that matched
+  `Error::Connection` for a slow download should match `Error::Timeout`.
+  A body cut short by a closed connection is still `Error::Connection`.
+
 ### Fixed
 
 - **Ride out a box-service restart behind a gateway.** When the box HTTP

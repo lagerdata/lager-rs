@@ -180,9 +180,9 @@ fn a_json_body_that_stalls_after_the_headers_is_a_timeout() {
 
 #[cfg(feature = "admin")]
 #[test]
-fn a_raw_body_that_stalls_after_the_headers_is_a_connection_error() {
-    // Same stall on a raw-bytes call (`download_file` with a budget): the
-    // body read fails as `Connection`.
+fn a_raw_body_that_stalls_after_the_headers_is_a_timeout() {
+    // Same stall on a raw-bytes call (`download_file` with a budget): a
+    // timeout, as on the JSON path and the async client.
     let (url, _) = serve_raw(vec![Reply::then_stall(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: application/octet-stream\r\n\
@@ -193,6 +193,28 @@ fn a_raw_body_that_stalls_after_the_headers_is_a_connection_error() {
     let err = lager
         .admin()
         .download_file_with_timeout("/tmp/lager-output/x", Some(Duration::from_millis(300)))
+        .unwrap_err();
+    assert!(matches!(err, Error::Timeout(_)), "{err:?}");
+    assert!(
+        err.to_string().contains("reading the response timed out"),
+        "{err}"
+    );
+}
+
+#[cfg(feature = "admin")]
+#[test]
+fn a_raw_body_cut_short_is_still_a_connection_error() {
+    // The box closes the connection 96 bytes short of its Content-Length:
+    // a read failure that is not a timeout stays `Connection`.
+    let (url, _) = serve_raw(vec![Reply::send(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: application/octet-stream\r\n\
+         Content-Length: 100\r\n\r\n\x7fELF",
+    )]);
+    let lager = LagerBox::connect(url).unwrap();
+    let err = lager
+        .admin()
+        .download_file_with_timeout("/tmp/lager-output/x", Some(Duration::from_secs(5)))
         .unwrap_err();
     assert!(matches!(err, Error::Connection(_)), "{err:?}");
     assert!(

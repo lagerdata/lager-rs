@@ -580,11 +580,20 @@ impl LagerBox {
         };
         let status = resp.status().as_u16();
         let gateway = Self::gateway_denial(&resp);
+        // As on the JSON path: a body that stalls past the deadline is a
+        // timeout (the async client's reqwest reports it the same way); any
+        // other read failure is a connection error.
         let mut bytes = Vec::new();
         resp.into_body()
             .into_reader()
             .read_to_end(&mut bytes)
-            .map_err(|e| Error::Connection(format!("reading the response failed: {e}")))?;
+            .map_err(|e| {
+                if is_timeout(&e) {
+                    Error::Timeout(format!("reading the response timed out: {e}"))
+                } else {
+                    Error::Connection(format!("reading the response failed: {e}"))
+                }
+            })?;
         Ok((status, gateway, bytes))
     }
 
