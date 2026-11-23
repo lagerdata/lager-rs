@@ -13,6 +13,7 @@ use crate::nets::adc::AsyncAdc;
 use crate::nets::arm::AsyncArm;
 use crate::nets::battery::AsyncBattery;
 use crate::nets::ble::AsyncBle;
+use crate::nets::ble_sniffer::AsyncBleSniffer;
 use crate::nets::blufi::AsyncBlufi;
 use crate::nets::custom::AsyncCustomNet;
 use crate::nets::dac::AsyncDac;
@@ -379,7 +380,6 @@ impl AsyncLagerBox {
     /// Send one request with a raw body (or none) and return `(status, raw
     /// response body)`, with the same gateway handling as
     /// [`AsyncLagerBox::execute`]. Used for uploads and file downloads.
-    #[cfg(feature = "admin")]
     pub(crate) async fn execute_raw(&self, req: &wire::RawRequest) -> Result<(u16, Vec<u8>)> {
         self.with_gateway_auth(
             |token| async move { self.send_raw_once(req, token.as_deref()).await },
@@ -519,7 +519,6 @@ impl AsyncLagerBox {
 
     /// One raw-body round-trip against the box API; see
     /// [`AsyncLagerBox::execute_raw`].
-    #[cfg(feature = "admin")]
     async fn send_raw_once(
         &self,
         req: &wire::RawRequest,
@@ -1025,6 +1024,15 @@ impl AsyncLagerBox {
     /// Handle for a thermocouple net.
     pub fn thermocouple(&self, name: impl Into<String>) -> AsyncThermocouple<'_> {
         AsyncThermocouple {
+            client: self,
+            name: name.into(),
+        }
+    }
+
+    /// Handle for a Bluetooth LE sniffer net (box >= 0.65.0). See
+    /// [`crate::nets::ble_sniffer`].
+    pub fn ble_sniffer(&self, name: impl Into<String>) -> AsyncBleSniffer<'_> {
+        AsyncBleSniffer {
             client: self,
             name: name.into(),
         }

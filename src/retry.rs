@@ -291,6 +291,9 @@ fn net_command_is_retry_safe(role: Option<&str>, action: &str, body: &Value) -> 
         // time. Not `errors`: reading the SCPI error queue drains it.
         Some("dmm") => matches!(action, "measure" | "identify"),
         Some("hsm") => action == "info",
+        // Not `start` (a second capture) or `stop`/`delete`. A `job` poll
+        // after a restart answers that the job is gone, which is the truth.
+        Some("ble-sniffer") => matches!(action, "status" | "job"),
         // Router nets omit the role hint.
         None | Some("router" | "mikrotik") => matches!(
             action,

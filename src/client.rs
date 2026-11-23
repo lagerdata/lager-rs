@@ -11,6 +11,7 @@ use crate::nets::adc::Adc;
 use crate::nets::arm::Arm;
 use crate::nets::battery::Battery;
 use crate::nets::ble::Ble;
+use crate::nets::ble_sniffer::BleSniffer;
 use crate::nets::blufi::Blufi;
 use crate::nets::custom::CustomNet;
 use crate::nets::dac::Dac;
@@ -416,7 +417,6 @@ impl LagerBox {
     /// Send one request with a raw body (or none) and return `(status, raw
     /// response body)`, with the same gateway handling as
     /// [`LagerBox::execute`]. Used for uploads and file downloads.
-    #[cfg(feature = "admin")]
     pub(crate) fn execute_raw(&self, req: &wire::RawRequest) -> Result<(u16, Vec<u8>)> {
         self.with_gateway_auth(|token| self.send_raw_once(req, token))
     }
@@ -560,7 +560,6 @@ impl LagerBox {
 
     /// One raw-body round-trip against the box API; see
     /// [`LagerBox::execute_raw`].
-    #[cfg(feature = "admin")]
     fn send_raw_once(
         &self,
         req: &wire::RawRequest,
@@ -1046,6 +1045,15 @@ impl LagerBox {
     /// Handle for a thermocouple net.
     pub fn thermocouple(&self, name: impl Into<String>) -> Thermocouple<'_> {
         Thermocouple {
+            client: self,
+            name: name.into(),
+        }
+    }
+
+    /// Handle for a Bluetooth LE sniffer net (box >= 0.65.0). See
+    /// [`crate::nets::ble_sniffer`].
+    pub fn ble_sniffer(&self, name: impl Into<String>) -> BleSniffer<'_> {
+        BleSniffer {
             client: self,
             name: name.into(),
         }
