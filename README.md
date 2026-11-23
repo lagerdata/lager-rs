@@ -138,6 +138,7 @@ newer surfaces need a newer box image and fail with
 | `dmm()` | >= 0.62.0 |
 | `ConnectOptions::transport` set to JTAG | >= 0.62.0 (checked against the debug service's `/health` features) |
 | `Ble::session_open()` / `session_force_close()` (`BleSession`) | >= 0.63.0 (`status().capabilities.ble_session`) |
+| `ble_sniffer()` | >= 0.65.0 (`status().capabilities.net_command_roles` lists `ble-sniffer`; an older box answers HTTP 404, net not found) |
 | `admin()`: `net_metadata()` / `set_net_metadata()` *(feature `admin`)* | >= 0.46.0 |
 | `admin()`: `bench_manifest()` *(feature `admin`)* | >= 0.50.0 |
 | `admin()`: the driver calls *(feature `admin`)* | >= 0.59.0 (a driver's Python packages: >= 0.60.0) |

@@ -67,8 +67,7 @@ pub struct HttpRequest {
 }
 
 /// A request whose body, and answer, are bytes rather than JSON: uploads
-/// and file downloads (feature `admin`).
-#[cfg(feature = "admin")]
+/// and file downloads (admin routes and `BleSniffer::download`).
 #[derive(Debug, Clone)]
 pub(crate) struct RawRequest {
     pub(crate) method: Method,
@@ -78,7 +77,6 @@ pub(crate) struct RawRequest {
 }
 
 /// A request body and its media type.
-#[cfg(feature = "admin")]
 #[derive(Debug, Clone)]
 pub(crate) struct RawBody {
     pub(crate) content_type: String,

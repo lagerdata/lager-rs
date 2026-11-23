@@ -4,6 +4,24 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Bluetooth LE sniffer nets** (`LagerBox::ble_sniffer` /
+  `AsyncLagerBox::ble_sniffer` → `BleSniffer` / `AsyncBleSniffer`) wrap the
+  `ble-sniffer` role that box software 0.65.0 added: an nRF52840 Dongle
+  running Nordic's nRF Sniffer firmware records Bluetooth LE traffic to a
+  pcap. `capture(&SnifferOptions)` starts a capture job, waits for it,
+  downloads the pcap and deletes the box copy, and returns
+  `SnifferCapture`; `start`, `job`, `stop`, `status`, `delete` and
+  `download` drive each step. `SnifferOptions` follows one device by
+  address (`follow`, `address_type`) or by advertised name
+  (`follow_by_name`), and sets `only_advertising`, `coded` and
+  `rssi_cut_off`. A job that fails with nothing recorded is `Error::Box`
+  (409 for a busy sniffer); one that fails mid-capture returns what it
+  recorded. `BLE_SNIFFER_SINCE` names the box version. `download` and
+  `capture` do not need the `admin` feature. Not yet run against a real
+  sniffer dongle.
+
 ### Fixed
 
 - **Ride out a box-service restart behind a gateway.** When the box HTTP

@@ -107,3 +107,6 @@ the token to attach to a raw HTTP call against any other.
 - Crate 0.11, feature `admin`: saved-net create, rename and delete,
   net and box metadata, `/instruments/list`, `/bench`, custom drivers,
   `/binaries`, `/download-file`, custom-device assignment and `/diagnose/*`.
+- Box 0.65.0 + crate 0.14: the `ble-sniffer` role (`start`, `job`, `stop`,
+  `status`, `delete`), with `BleSniffer::download()` and `capture()` fetching
+  the pcap through `/download-file` without the `admin` feature.

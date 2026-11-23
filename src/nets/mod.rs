@@ -9,6 +9,7 @@ pub mod adc;
 pub mod arm;
 pub mod battery;
 pub mod ble;
+pub mod ble_sniffer;
 pub mod blufi;
 pub mod custom;
 pub mod dac;

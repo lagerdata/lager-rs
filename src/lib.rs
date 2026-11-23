@@ -5,8 +5,8 @@
 //! The crate is a pure HTTP/JSON client of the Lager box's API on port
 //! 9000: power supplies, battery simulators, e-loads, solar simulators,
 //! GPIO, ADC, DAC, thermocouples, bench multimeters, watt meters, energy analyzers, SPI, I2C,
-//! USB hub ports, robot arms, webcams, routers, and (behind the `uart`
-//! feature) streaming UART. Box-level capabilities — the box's own BLE adapter
+//! USB hub ports, robot arms, webcams, routers, Bluetooth LE sniffers, and
+//! (behind the `uart` feature) streaming UART. Box-level capabilities — the box's own BLE adapter
 //! ([`LagerBox::ble`]), WiFi interface ([`LagerBox::wifi`]), and BluFi
 //! ESP32 provisioning ([`LagerBox::blufi`]) — are exposed the same way.
 //! Debug-probe nets ([`nets::debug::DebugNet`]) talk to the box's debug
@@ -183,6 +183,10 @@ pub use nets::ble::BleSession;
 pub use nets::ble::{
     BleSessionMessage, BleSessionNotifications, BleSessionOptions, GattChar, SESSION_SINCE,
 };
+pub use nets::ble_sniffer::{
+    AddressType, SnifferCapture, SnifferErrorKind, SnifferJob, SnifferJobState, SnifferOptions,
+    SnifferResult, SnifferStatus, SnifferStop, BLE_SNIFFER_SINCE,
+};
 pub use nets::blufi::BlufiOpMode;
 pub use nets::debug::{
     ConnectOptions, EraseOptions, FirmwareKind, FlashOptions, RttOptions, Transport,
@@ -211,18 +215,19 @@ pub use wire::{
 
 #[cfg(feature = "blocking")]
 pub use nets::{
-    adc::Adc, arm::Arm, battery::Battery, ble::Ble, blufi::Blufi, custom::CustomNet, dac::Dac,
-    debug::DebugNet, debug::RttStream, dfu::Dfu, dmm::Dmm, eload::Eload, energy::EnergyAnalyzer,
-    gpio::Gpio, hsm::Hsm, i2c::I2c, router::Router, scope::Scope, solar::Solar, spi::Spi,
-    supply::Supply, thermocouple::Thermocouple, usb::UsbPort, watt::WattMeter, webcam::Webcam,
-    wifi::Wifi,
+    adc::Adc, arm::Arm, battery::Battery, ble::Ble, ble_sniffer::BleSniffer, blufi::Blufi,
+    custom::CustomNet, dac::Dac, debug::DebugNet, debug::RttStream, dfu::Dfu, dmm::Dmm,
+    eload::Eload, energy::EnergyAnalyzer, gpio::Gpio, hsm::Hsm, i2c::I2c, router::Router,
+    scope::Scope, solar::Solar, spi::Spi, supply::Supply, thermocouple::Thermocouple, usb::UsbPort,
+    watt::WattMeter, webcam::Webcam, wifi::Wifi,
 };
 
 #[cfg(feature = "async")]
 pub use nets::{
-    adc::AsyncAdc, arm::AsyncArm, battery::AsyncBattery, ble::AsyncBle, blufi::AsyncBlufi,
-    custom::AsyncCustomNet, dac::AsyncDac, debug::AsyncDebugNet, dfu::AsyncDfu, dmm::AsyncDmm,
-    eload::AsyncEload, energy::AsyncEnergyAnalyzer, gpio::AsyncGpio, hsm::AsyncHsm, i2c::AsyncI2c,
+    adc::AsyncAdc, arm::AsyncArm, battery::AsyncBattery, ble::AsyncBle,
+    ble_sniffer::AsyncBleSniffer, blufi::AsyncBlufi, custom::AsyncCustomNet, dac::AsyncDac,
+    debug::AsyncDebugNet, dfu::AsyncDfu, dmm::AsyncDmm, eload::AsyncEload,
+    energy::AsyncEnergyAnalyzer, gpio::AsyncGpio, hsm::AsyncHsm, i2c::AsyncI2c,
     router::AsyncRouter, scope::AsyncScope, solar::AsyncSolar, spi::AsyncSpi, supply::AsyncSupply,
     thermocouple::AsyncThermocouple, usb::AsyncUsbPort, watt::AsyncWattMeter, webcam::AsyncWebcam,
     wifi::AsyncWifi,
