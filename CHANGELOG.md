@@ -4,6 +4,12 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-23
+
+Adds Bluetooth LE sniffer nets, which need box software 0.65.0 or later.
+Behavior change: on the blocking client, a raw download that stalls past its
+timeout is now `Error::Timeout`, not `Error::Connection`.
+
 ### Added
 
 - **Bluetooth LE sniffer nets** (`LagerBox::ble_sniffer` /
@@ -47,8 +53,8 @@ All notable changes to the `lager-net` crate are documented here.
   requests that are not safe to repeat fail with the new
   `Error::BoxServiceUnavailable`, which says the service may be restarting
   and suggests `lager update`; the gateway's body is its `source()`. A 502
-  without the header is unchanged. Admin raw-body calls and streaming
-  sessions are not retried.
+  without the header is unchanged. Raw-body calls (`admin`,
+  `BleSniffer::download`) and streaming sessions are not retried.
 
 - **The `admin` docs name the right CLI command.** The module docs and
   `BenchManifest` called the CLI equivalent `lager box bench export`; the
