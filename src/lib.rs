@@ -145,7 +145,8 @@ pub use admin::{
     BenchManifest, BinaryAdded, BinaryEntry, BinaryList, BoxMetadata, CableId, CatalogDevice,
     CustomDevices, DeviceAssigned, DeviceAssignment, DeviceRemoval, DriverDeps, DriverEntry,
     DriverInstall, DriverRemoval, Instrument, JlinkDiagnosis, NetMetadata, NetMetadataFields,
-    NetMetadataUpdate, SerialCable, UsbDiagnosis, UsbHubDiagnosis, VisaDiagnosis,
+    NetMetadataUpdate, PowerUpDevice, PowerUpLevel, PowerUpPin, PowerUpReport, PowerUpSet,
+    SerialCable, UsbDiagnosis, UsbHubDiagnosis, VisaDiagnosis,
 };
 
 /// Environment variable read by `from_env` constructors (`LAGER_BOX_HOST`).

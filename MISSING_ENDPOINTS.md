@@ -110,3 +110,7 @@ the token to attach to a raw HTTP call against any other.
 - Box 0.65.0 + crate 0.14: the `ble-sniffer` role (`start`, `job`, `stop`,
   `status`, `delete`), with `BleSniffer::download()` and `capture()` fetching
   the pcap through `/download-file` without the `admin` feature.
+- Box 0.66.0 + crate 0.15, feature `admin`: gpio power-up levels
+  (`PUT /nets/<name>/power-up` -> `set_power_up()`, `POST /nets/power-up` ->
+  `power_up_plan()` and `apply_power_up()`, `/status` `netPowerUp` ->
+  `BoxCapabilities::net_power_up`).
