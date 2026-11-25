@@ -2,10 +2,11 @@
 //! saved nets, edit net and box metadata, list the instruments plugged in,
 //! read the bench manifest, install custom drivers, upload binaries,
 //! download files scripts leave on the box, assign USB-serial cables to
-//! custom devices, and run the box's diagnostics. These are the calls behind
-//! `lager nets add`, `lager nets delete`, `lager nets assign`, `lager
-//! instruments`, `lager bench export`, `lager drivers`, `lager binaries`
-//! and `lager diagnose`.
+//! custom devices, set the levels LabJack gpio pins take at power-up, and
+//! run the box's diagnostics. These are the calls behind `lager nets add`,
+//! `lager nets delete`, `lager nets assign`, `lager nets set-power-up`,
+//! `lager nets apply-power-up`, `lager instruments`, `lager bench export`,
+//! `lager drivers`, `lager binaries` and `lager diagnose`.
 //!
 //! ```no_run
 //! # #[cfg(feature = "blocking")]
@@ -32,7 +33,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
@@ -608,6 +609,143 @@ pub struct JlinkDiagnosis {
     pub extra: Map<String, Value>,
 }
 
+/// The level a gpio net's pin takes when its instrument powers up, before
+/// any test runs. The box stores it with the net
+/// ([`Admin::set_power_up`]) and writes it to the instrument's own power-up
+/// configuration ([`Admin::apply_power_up`]). Box >= 0.66.0, LabJack T7 and
+/// U3 gpio nets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum PowerUpLevel {
+    /// The pin is an output driven low.
+    Low,
+    /// The pin is an output driven high.
+    High,
+}
+
+impl PowerUpLevel {
+    /// The level as the box writes it: `"low"` or `"high"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PowerUpLevel::Low => "low",
+            PowerUpLevel::High => "high",
+        }
+    }
+}
+
+/// Result of [`Admin::set_power_up`]: what the box stored.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[non_exhaustive]
+pub struct PowerUpSet {
+    /// Net name.
+    #[serde(default)]
+    pub name: String,
+    /// The stored level; `None` when the level was cleared.
+    #[serde(default)]
+    pub power_up: Option<PowerUpLevel>,
+}
+
+/// The box's check or write of every LabJack's power-up configuration, from
+/// [`Admin::power_up_plan`] and [`Admin::apply_power_up`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct PowerUpReport {
+    /// `"plan"` (read only) or `"apply"`.
+    #[serde(default)]
+    pub mode: String,
+    /// One entry per LabJack that has gpio nets with a declared level.
+    #[serde(default)]
+    pub devices: Vec<PowerUpDevice>,
+    /// LabJack gpio nets with no declared level.
+    #[serde(default)]
+    pub undeclared: Vec<String>,
+    /// Whether every device's stored configuration matches its declared
+    /// levels, with no device in error.
+    #[serde(default)]
+    pub in_sync: bool,
+}
+
+/// One LabJack in a [`PowerUpReport`]. A device the box could not reach or
+/// write has `error` set; the call itself still succeeds.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct PowerUpDevice {
+    /// The box's identity for the physical device.
+    #[serde(default)]
+    pub device_id: String,
+    /// The nets' instrument name, e.g. `"LabJack_T7"`.
+    #[serde(default)]
+    pub instrument: Option<String>,
+    /// `"T7"` or `"U3"`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The device's serial number.
+    #[serde(default, deserialize_with = "crate::wire::lenient::opt_string")]
+    pub serial: Option<String>,
+    /// Whether the stored configuration matches the declared levels.
+    #[serde(default)]
+    pub in_sync: bool,
+    /// Whether this call wrote the device's flash (`apply` only).
+    #[serde(default)]
+    pub written: Option<bool>,
+    /// Why the device could not be checked or written.
+    #[serde(default)]
+    pub error: Option<String>,
+    /// The declared pins, with what the device stores.
+    #[serde(default)]
+    pub pins: Vec<PowerUpPin>,
+    /// Pins the device has as outputs that no net declares (T7).
+    #[serde(default)]
+    pub undeclared_outputs: Vec<String>,
+    /// Everything else the box reports for the device.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// One declared pin in a [`PowerUpDevice`].
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[non_exhaustive]
+pub struct PowerUpPin {
+    /// The gpio net that declares the level.
+    #[serde(default)]
+    pub net: Option<String>,
+    /// The device's DIO number.
+    #[serde(default)]
+    pub dio: Option<u32>,
+    /// The pin's name on the device, e.g. `"FIO4"`.
+    #[serde(default)]
+    pub dio_name: Option<String>,
+    /// The declared level, `"low"` or `"high"`.
+    #[serde(default)]
+    pub declared: Option<String>,
+    /// What the device stores for the pin: `"low"`, `"high"`, `"input"`,
+    /// `"analog"`, or `None` when the device cannot report it.
+    #[serde(default)]
+    pub stored: Option<String>,
+    /// Everything else the box reports for the pin.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl NetRecord {
+    /// Declare the level the net's pin takes at instrument power-up, saved
+    /// with the record by [`Admin::save_net`]. Box >= 0.66.0, LabJack T7 and
+    /// U3 gpio nets; the box refuses it on any other net.
+    pub fn power_up(mut self, level: PowerUpLevel) -> Self {
+        self.extra
+            .insert("power_up".to_string(), Value::from(level.as_str()));
+        self
+    }
+
+    /// The power-up level the record declares, if any.
+    pub fn declared_power_up(&self) -> Option<PowerUpLevel> {
+        self.extra
+            .get("power_up")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+}
+
 impl NetRecord {
     /// A net record to save with [`Admin::save_net`]. `instrument` is the
     /// name [`Admin::instruments`] reports, e.g. `"Rigol_DP832"`.
@@ -711,8 +849,8 @@ pub(crate) mod ops {
     use super::{
         AdminOp, BenchManifest, BinaryAdded, BinaryList, BoxMetadata, CableId, CustomDevices,
         DeviceAssigned, DeviceRemoval, DriverEntry, DriverInstall, DriverRemoval, Instrument,
-        JlinkDiagnosis, NetMetadata, NetMetadataUpdate, Parse, UsbDiagnosis, UsbHubDiagnosis,
-        VisaDiagnosis,
+        JlinkDiagnosis, NetMetadata, NetMetadataUpdate, Parse, PowerUpLevel, PowerUpReport,
+        PowerUpSet, UsbDiagnosis, UsbHubDiagnosis, VisaDiagnosis,
     };
     use crate::error::{Error, Result};
     use crate::wire::{
@@ -732,11 +870,16 @@ pub(crate) mod ops {
     const DOWNLOAD: &str = "this box does not serve /download-file";
     const CUSTOM_DEVICES: &str = "this box does not serve /custom-devices";
     const DIAGNOSE: &str = "this box does not serve /diagnose";
+    const POWER_UP: &str =
+        "this box does not serve gpio power-up levels (requires box software >= 0.66.0)";
 
     /// The box allows pip 300 s; the CLI waits 360 s.
     const PIP_BUDGET: Duration = Duration::from_secs(360);
     /// The CLI's budget for a binary upload.
     const UPLOAD_BUDGET: Duration = Duration::from_secs(120);
+    /// An apply drives each LabJack's pins and writes its flash; the box
+    /// allows each LabJack 60 s.
+    const POWER_UP_APPLY_BUDGET: Duration = Duration::from_secs(120);
 
     /// The CLI's budget for these routes.
     fn budget() -> Timeout {
@@ -1159,6 +1302,45 @@ pub(crate) mod ops {
         diagnose("jlink", "net", net, 60, parse_as::<JlinkDiagnosis>)
     }
 
+    pub(crate) fn set_power_up(name: &str, level: Option<PowerUpLevel>) -> AdminOp<PowerUpSet> {
+        AdminOp {
+            req: req(
+                Method::Put,
+                format!("/nets/{}/power-up", path_segment(name)),
+                Some(json!({ "power_up": level.map(PowerUpLevel::as_str) })),
+            ),
+            parse: Parse::Json(parse_as::<PowerUpSet>),
+            unsupported: POWER_UP,
+        }
+    }
+
+    pub(crate) fn power_up_plan() -> AdminOp<PowerUpReport> {
+        AdminOp {
+            req: req(
+                Method::Post,
+                "/nets/power-up".to_string(),
+                Some(json!({ "mode": "plan" })),
+            ),
+            parse: Parse::Json(parse_as::<PowerUpReport>),
+            unsupported: POWER_UP,
+        }
+    }
+
+    pub(crate) fn apply_power_up(allow_undeclared: bool) -> AdminOp<PowerUpReport> {
+        AdminOp {
+            req: RawRequest {
+                method: Method::Post,
+                path: "/nets/power-up".to_string(),
+                body: Some(RawBody::json(
+                    &json!({ "mode": "apply", "allow_undeclared": allow_undeclared }),
+                )),
+                timeout: Timeout::After(POWER_UP_APPLY_BUDGET),
+            },
+            parse: Parse::Json(parse_as::<PowerUpReport>),
+            unsupported: POWER_UP,
+        }
+    }
+
     pub(crate) fn bench_manifest() -> AdminOp<BenchManifest> {
         AdminOp {
             req: req(Method::Get, "/bench".to_string(), None),
@@ -1312,5 +1494,25 @@ admin_handle! {
         /// to the target over SWD, so do not call it during a flash. It can
         /// take over 30 seconds.
         fn diagnose_jlink(net: &str) -> JlinkDiagnosis = ops::diagnose_jlink;
+        /// Declare or clear a gpio net's power-up level
+        /// (`PUT /nets/<name>/power-up`), as `lager nets set-power-up` does.
+        /// This only records the level; [`Admin::apply_power_up`] writes it
+        /// to the LabJack. `None` clears it, and leaves what the LabJack
+        /// already stores as it is. A net that is not a LabJack T7 or U3
+        /// gpio net is [`crate::Error::Box`] (400). Box >= 0.66.0.
+        fn set_power_up(net: &str, level: Option<PowerUpLevel>) -> PowerUpSet
+            = ops::set_power_up;
+        /// Compare every LabJack's stored power-up configuration with the
+        /// declared levels, without changing anything, as `lager nets
+        /// apply-power-up --dry-run` does. Box >= 0.66.0.
+        fn power_up_plan() -> PowerUpReport = ops::power_up_plan;
+        /// Write the declared power-up levels to every LabJack whose stored
+        /// configuration differs, as `lager nets apply-power-up` does. This
+        /// drives each declared pin to its level now and writes the
+        /// LabJack's flash. A T7 with outputs no net declares is refused
+        /// unless `allow_undeclared`. A LabJack that cannot be written is
+        /// reported in its [`PowerUpDevice::error`]; read
+        /// [`PowerUpReport::in_sync`]. Waits up to 2 minutes. Box >= 0.66.0.
+        fn apply_power_up(allow_undeclared: bool) -> PowerUpReport = ops::apply_power_up;
     }
 }

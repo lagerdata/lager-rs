@@ -4,6 +4,21 @@ All notable changes to the `lager-net` crate are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **gpio power-up levels** (feature `admin`, box software 0.66.0 or later):
+  `Admin::set_power_up` / `AsyncAdmin::set_power_up` declare or clear the
+  level a LabJack T7 or U3 gpio net's pin takes when the LabJack powers up
+  (`PowerUpLevel::Low` / `High`), as `lager nets set-power-up` does.
+  `power_up_plan` compares each LabJack's stored configuration with the
+  declared levels without changing anything, and `apply_power_up` drives the
+  declared pins and writes the LabJack's flash, as `lager nets
+  apply-power-up` does; both return a `PowerUpReport`. `NetRecord::power_up`
+  declares the level on a record for `save_net`, `NetRecord::declared_power_up`
+  reads it back, and `BoxCapabilities::net_power_up` reports the box's
+  support. A box without the routes is `Error::UnsupportedByBox`.
+  Not yet run against a real LabJack.
+
 ## [0.14.0] - 2026-11-23
 
 Adds Bluetooth LE sniffer nets, which need box software 0.65.0 or later.

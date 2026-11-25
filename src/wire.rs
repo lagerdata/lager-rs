@@ -817,6 +817,18 @@ pub(crate) mod lenient {
         let v = Option::<Value>::deserialize(d)?;
         Ok(v.as_ref().and_then(super::as_bool))
     }
+
+    /// A string, or a number written as one (a serial a driver reports as
+    /// an integer); `None` for null or anything else.
+    #[allow(dead_code)] // used only with the `admin` feature
+    pub fn opt_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+        let v = Option::<Value>::deserialize(d)?;
+        Ok(match v {
+            Some(Value::String(s)) => Some(s),
+            Some(Value::Number(n)) => Some(n.to_string()),
+            _ => None,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1206,6 +1218,11 @@ pub struct BoxCapabilities {
     /// [`crate::Blufi::send_custom_data`].
     #[serde(default, rename = "blufiCustomData")]
     pub blufi_custom_data: bool,
+    /// Whether gpio nets can declare a power-up level and the box can write
+    /// it to a LabJack (box >= 0.66.0). With the `admin` feature, see
+    /// `Admin::set_power_up` and `Admin::apply_power_up`.
+    #[serde(default, rename = "netPowerUp")]
+    pub net_power_up: bool,
 }
 
 /// Response of `GET /status`.
